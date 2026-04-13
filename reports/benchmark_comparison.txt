@@ -1,0 +1,258 @@
+GoodHistogram vs Prometheus Native — Benchmark Report
+=====================================================
+
+Configuration:
+  Schema:      2
+  Error bound: 10%
+  Range:       [500ns, 60s]
+  Buckets:     109 (both implementations)
+
+Platforms:
+  Mac ARM:  Apple Silicon (M-series)
+  GCE x86:  24-core Linux amd64 (us-east1-b)
+
+
+=== SECTION 1: Memory ===
+-------------------------------------------------
+
+Implementation           Buckets    Memory
+----------------------  --------  --------
+GoodHistogram                109     0.85KB
+Prometheus Native            109    19.03KB
+                                    (22x more)
+
+GoodHistogram uses a flat array of 109 atomic.Uint64 counters (109 * 8 = 872
+bytes). The config (lookup table, boundaries, schema metadata) is shared by
+pointer across all histograms with the same range and error bound — in
+CockroachDB this is typically one config for thousands of histogram instances,
+so its ~3KB cost is amortized to near zero per histogram.
+
+Prometheus Native uses a synchronized sparse map with ~85 bytes per entry
+(map entry struct + interface boxing + *int64 heap alloc), maintained in
+hot/cold copies, plus conventional bucket arrays. This overhead is per
+histogram instance.
+
+
+=== SECTION 2: Recording Speed ===
+-------------------------------------------------
+
+Single-Threaded
+                         Mac ARM    GCE x86
+  GoodHistogram           2.6ns     20.4ns
+  Prometheus Native      58.1ns    132.4ns
+  Speedup                  22x       6.5x
+
+Parallel (GOMAXPROCS goroutines: 11 on ARM, 24 on x86)
+                         Mac ARM    GCE x86
+  GoodHistogram          56.9ns     51.7ns
+  Prometheus Native     184.3ns    184.2ns
+  Speedup                 3.2x       3.6x
+
+Methodology: median of 5 runs, pre-generated log-uniform values indexed
+from an array (no RNG in the timed loop).
+
+
+=== SECTION 3: Contention Scaling (GCE x86, 24 cores) ===
+-------------------------------------------------
+
+SetParallelism controls the multiplier on GOMAXPROCS for RunParallel.
+On this 24-core machine, SetParallelism(N) runs N*24 goroutines.
+Numbers are per-operation ns/op.
+
+SetParallelism  Goroutines  GoodHistogram  Prometheus Native  Speedup
+--------------  ----------  -------------  -----------------  -------
+             1          24        53.8ns          185.1ns       3.4x
+            10         240        53.3ns          176.2ns       3.3x
+            50        1200        53.1ns          178.6ns       3.4x
+           100        2400        53.5ns          183.4ns       3.4x
+
+GoodHistogram shows flat scaling from 24 to 2400 goroutines. Lock-free
+atomic increments avoid contention regardless of goroutine count.
+
+
+=== SECTION 4: Quantile Accuracy — Per Distribution ===
+-------------------------------------------------
+
+100,000 samples per distribution. Signed relative error shown
+(+overestimate / -underestimate).
+
+Prometheus quantiles use log-linear (exponential) interpolation within
+buckets, matching the actual Prometheus implementation for native
+histogram exponential buckets. GoodHistogram uses trapezoidal interpolation.
+
+Distribution: uniform
+Quant           True    GoodHist     PromNat
+------  ------------  ----------  ----------
+p50.0         29.90s      +0.14%      -0.19%
+p75.0         45.08s      +0.15%      -0.30%
+p90.0         54.02s      +0.14%      -0.32%
+p95.0         56.95s      +0.19%      -0.05%
+p99.0         59.39s      +0.04%     +10.33%
+p99.9         59.93s      +0.01%     +14.11%
+
+Distribution: log-uniform
+Quant           True    GoodHist     PromNat
+------  ------------  ----------  ----------
+p50.0         5.32ms      +0.28%      +0.14%
+p75.0       588.42ms      +0.52%      +0.44%
+p90.0          9.39s      -0.02%      -0.13%
+p95.0         23.30s      -0.19%      -0.16%
+p99.0         49.68s      -0.08%      -0.15%
+p99.9         58.80s      +0.15%      +6.79%
+
+Distribution: exponential
+Quant           True    GoodHist     PromNat
+------  ------------  ----------  ----------
+p50.0        69.12ms      -0.03%      -0.11%
+p75.0       138.34ms      -0.02%      +0.06%
+p90.0       230.88ms      +0.18%      +0.28%
+p95.0       300.33ms      +0.08%      +0.60%
+p99.0       458.71ms      +0.20%      +0.49%
+p99.9       698.80ms      +0.15%      +1.73%
+
+Distribution: lognormal-narrow
+Quant           True    GoodHist     PromNat
+------  ------------  ----------  ----------
+p50.0        10.04ms      +0.14%      -0.02%
+p75.0        19.70ms      +0.05%      -0.00%
+p90.0        35.86ms      +0.01%      +0.41%
+p95.0        51.39ms      +0.01%      +0.57%
+p99.0       100.96ms      +0.09%      +0.83%
+p99.9       218.91ms      -1.13%      -0.34%
+
+Distribution: lognormal-wide
+Quant           True    GoodHist     PromNat
+------  ------------  ----------  ----------
+p50.0         1.01ms      -0.20%      -0.25%
+p75.0         3.88ms      +0.03%      +0.09%
+p90.0        12.86ms      +0.13%      +0.25%
+p95.0        26.41ms      +0.15%      +0.33%
+p99.0       101.93ms      +0.71%      +1.04%
+p99.9       479.22ms      -0.45%      -0.19%
+
+Distribution: pareto-alpha1.5
+Quant           True    GoodHist     PromNat
+------  ------------  ----------  ----------
+p50.0          792ns      +0.18%      +0.69%
+p75.0         1.26us      +0.24%      +0.46%
+p90.0         2.33us      +0.11%      +0.50%
+p95.0         3.64us      +0.23%      +0.64%
+p99.0        10.67us      -0.54%      -0.01%
+p99.9        47.23us      -0.07%      +0.11%
+
+Distribution: pareto-alpha1.0
+Quant           True    GoodHist     PromNat
+------  ------------  ----------  ----------
+p50.0          997ns      +0.04%      +0.25%
+p75.0         2.01us      +0.06%      +0.20%
+p90.0         5.01us      +0.07%      +0.09%
+p95.0         9.83us      +0.20%      +0.13%
+p99.0        49.30us      -0.20%      +0.10%
+p99.9       458.97us      -1.20%      -0.96%
+
+Distribution: bimodal
+Quant           True    GoodHist     PromNat
+------  ------------  ----------  ----------
+p50.0         1.17ms      +0.07%      +0.15%
+p75.0         2.15ms      +0.25%      +0.80%
+p90.0       501.79ms      -0.04%      -0.09%
+p95.0       700.85ms      +0.01%      +0.39%
+p99.0          1.15s      -0.10%      +0.89%
+p99.9          1.86s      +0.33%      +1.41%
+
+Distribution: trimodal
+Quant           True    GoodHist     PromNat
+------  ------------  ----------  ----------
+p50.0       666.03us      +0.30%      +1.20%
+p75.0        49.89ms      +0.14%      +0.18%
+p90.0          2.28s      -0.43%      -2.74%
+p95.0          5.01s      +0.22%      -0.01%
+p99.0          7.34s      +0.26%      +0.65%
+p99.9         10.35s      +0.66%      +0.99%
+
+Distribution: chi-squared-k4
+Quant           True    GoodHist     PromNat
+------  ------------  ----------  ----------
+p50.0        41.99ms      -0.09%      -0.27%
+p75.0        67.18ms      -0.01%      -0.00%
+p90.0        96.88ms      -0.04%      +0.23%
+p95.0       118.58ms      +0.19%      +0.87%
+p99.0       166.55ms      +0.44%      +1.54%
+p99.9       236.53ms      +0.47%      +1.88%
+
+Distribution: weibull-k0.5
+Quant           True    GoodHist     PromNat
+------  ------------  ----------  ----------
+p50.0         4.76ms      +0.09%      +0.03%
+p75.0        19.37ms      +0.22%      +0.18%
+p90.0        53.15ms      +0.05%      +0.22%
+p95.0        88.75ms      +0.10%      +0.41%
+p99.0       210.78ms      -0.04%      +0.67%
+p99.9       465.42ms      -0.25%      +0.07%
+
+Distribution: point-mass-with-tail
+Quant           True    GoodHist     PromNat
+------  ------------  ----------  ----------
+p50.0         1.00ms      -3.32%      -3.68%
+p75.0         1.00ms      +1.31%      +1.07%
+p90.0         1.00ms      +4.09%      +4.03%
+p95.0         4.99ms      +0.15%      -0.01%
+p99.0          9.20s      -1.58%      -1.51%
+p99.9         49.65s      -0.76%      -0.80%
+
+
+=== SECTION 5: Accuracy Summary ===
+-------------------------------------------------
+
+Mean |Relative Error| Across All 12 Distributions
+
+Implementation          Mean |Err|
+----------------------  ----------
+GoodHistogram                0.35%
+Prometheus Native            1.00%
+                             (2.9x more accurate)
+
+Per-Distribution Mean |Error|
+
+Distribution             GoodHist  PromNat
+-----------------------  --------  --------
+uniform                    0.11%    4.06%
+log-uniform                0.21%    1.30%
+exponential                0.11%    0.55%
+lognormal-narrow           0.24%    0.36%
+lognormal-wide             0.28%    0.36%
+pareto-alpha1.5            0.23%    0.40%
+pareto-alpha1.0            0.30%    0.29%
+bimodal                    0.13%    0.62%
+trimodal                   0.34%    0.96%
+chi-squared-k4             0.21%    0.80%
+weibull-k0.5               0.16%    0.26%
+point-mass-with-tail       1.87%    1.85%
+
+The accuracy advantage comes from trapezoidal interpolation vs Prometheus's
+log-linear (exponential) interpolation within buckets. Prometheus interpolates
+in log2 space, assuming observations are uniformly distributed in log-space
+within each bucket. GoodHistogram estimates boundary densities and solves a
+quadratic to find the quantile, adapting to the local shape of the distribution.
+
+The worst case for Prometheus is near the range boundaries (uniform p99:
++10.33%, p99.9: +14.11%) where the conventional bucket +Inf boundary distorts
+interpolation. Both implementations struggle on point-mass-with-tail, where
+90% of values land in a single bucket.
+
+
+=== SECTION 6: Summary ===
+-------------------------------------------------
+
+                         GoodHistogram    Prometheus Native
+                         -------------    -----------------
+Buckets                  109              109
+Memory                   0.85KB           19.03KB (22x more)
+1-thread (ARM)           2.6ns            58.1ns  (22x slower)
+1-thread (x86)           20.4ns           132.4ns (6.5x slower)
+Parallel (ARM)           56.9ns           184.3ns (3.2x slower)
+Parallel (x86)           51.7ns           184.2ns (3.6x slower)
+Mean quantile error      0.35%            1.00%   (2.9x worse)
+Contention scaling       Flat             Flat
+Thread safety            Lock-free        Mutex
+Prometheus compatible    Yes              Yes
