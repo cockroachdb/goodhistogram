@@ -197,3 +197,5 @@ machine:
 | | goodhistogram | Prometheus native |
 |---|---:|---:|
 | Record (1 thread) | 2.6 ns/op | 58.1 ns/op |
+
+
