@@ -463,6 +463,147 @@ func TestQuantileEdgeCases(t *testing.T) {
 	})
 }
 
+func TestValuesAtQuantiles(t *testing.T) {
+	t.Run("matches individual calls", func(t *testing.T) {
+		h := New(Params{Lo: 1, Hi: 1e6, ErrorBound: 0.05})
+		rng := rand.New(rand.NewSource(42))
+		for i := 0; i < 10000; i++ {
+			h.Record(int64(rng.Float64()*999999) + 1)
+		}
+		snap := h.Snapshot()
+		qs := []float64{0, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95, 0.99, 0.999, 1.0}
+		batch := snap.ValuesAtQuantiles(qs)
+		for i, q := range qs {
+			single := snap.ValueAtQuantile(q)
+			require.InDeltaf(t, single, batch[i], 1e-9,
+				"q=%.3f: single=%.6f batch=%.6f", q, single, batch[i])
+		}
+	})
+
+	t.Run("preserves input order", func(t *testing.T) {
+		h := New(Params{Lo: 1, Hi: 1000, ErrorBound: 0.05})
+		for i := int64(1); i <= 1000; i++ {
+			h.Record(i)
+		}
+		snap := h.Snapshot()
+		// Deliberately unsorted quantiles.
+		qs := []float64{0.99, 0.25, 0.75, 0.50, 0.10}
+		batch := snap.ValuesAtQuantiles(qs)
+		for i, q := range qs {
+			single := snap.ValueAtQuantile(q)
+			require.InDeltaf(t, single, batch[i], 1e-9,
+				"q=%.2f at index %d", q, i)
+		}
+	})
+
+	t.Run("empty histogram", func(t *testing.T) {
+		h := New(Params{Lo: 1, Hi: 1000, ErrorBound: 0.05})
+		snap := h.Snapshot()
+		results := snap.ValuesAtQuantiles([]float64{0, 0.5, 1.0})
+		for i, r := range results {
+			require.Equalf(t, 0.0, r, "index %d", i)
+		}
+	})
+
+	t.Run("empty quantiles slice", func(t *testing.T) {
+		h := New(Params{Lo: 1, Hi: 1000, ErrorBound: 0.05})
+		h.Record(500)
+		snap := h.Snapshot()
+		require.Empty(t, snap.ValuesAtQuantiles([]float64{}))
+		require.Empty(t, snap.ValuesAtQuantiles(nil))
+	})
+
+	t.Run("single quantile", func(t *testing.T) {
+		h := New(Params{Lo: 1, Hi: 1000, ErrorBound: 0.05})
+		for i := int64(1); i <= 100; i++ {
+			h.Record(i)
+		}
+		snap := h.Snapshot()
+		batch := snap.ValuesAtQuantiles([]float64{0.50})
+		single := snap.ValueAtQuantile(0.50)
+		require.InDelta(t, single, batch[0], 1e-9)
+	})
+
+	t.Run("all zeros", func(t *testing.T) {
+		h := New(Params{Lo: 1, Hi: 1000, ErrorBound: 0.05})
+		for i := 0; i < 100; i++ {
+			h.Record(0)
+		}
+		snap := h.Snapshot()
+		qs := []float64{0, 0.50, 0.99, 1.0}
+		batch := snap.ValuesAtQuantiles(qs)
+		for i, q := range qs {
+			single := snap.ValueAtQuantile(q)
+			require.InDeltaf(t, single, batch[i], 1e-9, "q=%.2f", q)
+		}
+	})
+
+	t.Run("all underflow", func(t *testing.T) {
+		h := New(Params{Lo: 100, Hi: 10000, ErrorBound: 0.05})
+		for i := int64(1); i <= 50; i++ {
+			h.Record(i)
+		}
+		snap := h.Snapshot()
+		qs := []float64{0, 0.50, 0.99, 1.0}
+		batch := snap.ValuesAtQuantiles(qs)
+		for i, q := range qs {
+			single := snap.ValueAtQuantile(q)
+			require.InDeltaf(t, single, batch[i], 1e-9, "q=%.2f", q)
+		}
+	})
+
+	t.Run("all overflow", func(t *testing.T) {
+		h := New(Params{Lo: 1, Hi: 100, ErrorBound: 0.05})
+		for i := int64(200); i <= 300; i++ {
+			h.Record(i)
+		}
+		snap := h.Snapshot()
+		qs := []float64{0, 0.50, 0.99, 1.0}
+		batch := snap.ValuesAtQuantiles(qs)
+		for i, q := range qs {
+			single := snap.ValueAtQuantile(q)
+			require.InDeltaf(t, single, batch[i], 1e-9, "q=%.2f", q)
+		}
+	})
+
+	t.Run("mixed underflow overflow and in-range", func(t *testing.T) {
+		h := New(Params{Lo: 100, Hi: 10000, ErrorBound: 0.05})
+		for i := 0; i < 10; i++ {
+			h.Record(0)
+		}
+		for i := int64(1); i <= 10; i++ {
+			h.Record(i)
+		}
+		for i := int64(500); i <= 559; i++ {
+			h.Record(i)
+		}
+		for i := int64(20000); i <= 20019; i++ {
+			h.Record(i)
+		}
+		snap := h.Snapshot()
+		qs := []float64{0, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95, 0.99, 1.0}
+		batch := snap.ValuesAtQuantiles(qs)
+		for i, q := range qs {
+			single := snap.ValueAtQuantile(q)
+			require.InDeltaf(t, single, batch[i], 1e-9, "q=%.2f", q)
+		}
+	})
+
+	t.Run("duplicate quantiles", func(t *testing.T) {
+		h := New(Params{Lo: 1, Hi: 1000, ErrorBound: 0.05})
+		for i := int64(1); i <= 100; i++ {
+			h.Record(i)
+		}
+		snap := h.Snapshot()
+		qs := []float64{0.50, 0.50, 0.50}
+		batch := snap.ValuesAtQuantiles(qs)
+		single := snap.ValueAtQuantile(0.50)
+		for i := range qs {
+			require.InDeltaf(t, single, batch[i], 1e-9, "index %d", i)
+		}
+	})
+}
+
 func TestMeanAndTotal(t *testing.T) {
 	h := New(Params{Lo: 1, Hi: 1000, ErrorBound: 0.05})
 	h.Record(100)
