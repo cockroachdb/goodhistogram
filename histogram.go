@@ -27,6 +27,7 @@ import (
 	"sort"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 const maxSchema = 8
@@ -213,6 +214,56 @@ type Params struct {
 	// this value.
 	ErrorBound float64
 }
+
+// Common Params presets, modeled after the bucket tiers in CockroachDB's
+// pkg/util/metric/histogram_buckets.go and Prometheus DefBuckets.
+//
+// Time-based presets expect values in nanoseconds, matching Go's
+// time.Duration. Record with int64(duration).
+var (
+	// HiResLatencyParams covers high-resolution latency from 1us to 5m.
+	// Use for: end-to-end request latencies where you need visibility into
+	// both fast-path sub-millisecond operations and slow tail outliers.
+	HiResLatencyParams = Params{
+		Lo: float64(time.Microsecond),
+		Hi: float64(5 * time.Minute),
+	}
+
+	// IOLatencyParams covers fast I/O operations from 10us to 10s.
+	// Use for: RPC latencies, raft operations, disk I/O, network round-trips.
+	IOLatencyParams = Params{
+		Lo: float64(10 * time.Microsecond),
+		Hi: float64(10 * time.Second),
+	}
+
+	// ResponseTimeParams covers request/response latencies from 1ms to 30s.
+	// Use for: SQL query execution, HTTP handlers, API response times.
+	ResponseTimeParams = Params{
+		Lo: float64(time.Millisecond),
+		Hi: float64(30 * time.Second),
+	}
+
+	// LongRunningParams covers long-running operations from 500ms to 1h.
+	// Use for: backups, restores, migrations, bulk ingestion jobs.
+	LongRunningParams = Params{
+		Lo: float64(500 * time.Millisecond),
+		Hi: float64(time.Hour),
+	}
+
+	// DataSizeParams covers data payload sizes from 1KB to 16MB (in bytes).
+	// Use for: message sizes, request/response bodies, SST sizes.
+	DataSizeParams = Params{
+		Lo: 1024,
+		Hi: 16 * 1024 * 1024,
+	}
+
+	// MemoryUsageParams covers memory tracking from 1B to 64MB (in bytes).
+	// Use for: memory allocations, buffer sizes, cache entry sizes.
+	MemoryUsageParams = Params{
+		Lo: 1,
+		Hi: 64 * 1024 * 1024,
+	}
+)
 
 func (p Params) withDefaults() Params {
 	if p.Lo == 0 {

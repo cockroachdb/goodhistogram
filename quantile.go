@@ -8,7 +8,10 @@
 
 package goodhistogram
 
-import "math"
+import (
+	"math"
+	"sort"
+)
 
 // ValueAtQuantile returns the estimated value at the given quantile q ∈ [0, 1]
 // using trapezoidal interpolation.
@@ -128,6 +131,137 @@ func (s *Snapshot) ValueAtQuantile(q float64) float64 {
 	}
 	// Should not reach here, but clamp to upper bound.
 	return s.cfg.boundaries[n]
+}
+
+// ValuesAtQuantiles returns the estimated values at the given quantiles
+// in a single pass through the bucket array. The input quantiles should be
+// in [0, 1]. Results are returned in the same order as the input quantiles.
+//
+// This is more efficient than calling ValueAtQuantile in a loop because it
+// computes bucket densities once and walks the bucket array once regardless
+// of how many quantiles are requested.
+func (s *Snapshot) ValuesAtQuantiles(qs []float64) []float64 {
+	results := make([]float64, len(qs))
+	if len(qs) == 0 || s.TotalCount == 0 {
+		return results
+	}
+
+	belowLo := float64(s.ZeroCount + s.Underflow)
+	var inRangeCount uint64
+	for _, c := range s.Counts {
+		inRangeCount += c
+	}
+
+	// Resolve edge cases per-quantile and collect those needing a bucket walk.
+	type walkEntry struct {
+		idx  int     // index in results
+		rank float64 // adjusted rank within in-range buckets
+	}
+	var walk []walkEntry
+	for i, q := range qs {
+		rank := q * float64(s.TotalCount)
+		if rank <= 0 {
+			if s.ZeroCount+s.Underflow > 0 {
+				results[i] = s.cfg.lo
+			} else {
+				results[i] = s.cfg.hi
+				for j, c := range s.Counts {
+					if c > 0 {
+						results[i] = s.cfg.boundaries[j]
+						break
+					}
+				}
+			}
+			continue
+		}
+		if rank >= float64(s.TotalCount) {
+			if s.Overflow > 0 {
+				results[i] = s.cfg.hi
+			} else {
+				results[i] = s.cfg.lo
+				for j := len(s.Counts) - 1; j >= 0; j-- {
+					if s.Counts[j] > 0 {
+						results[i] = s.cfg.boundaries[j+1]
+						break
+					}
+				}
+			}
+			continue
+		}
+		if rank <= belowLo {
+			results[i] = s.cfg.lo
+			continue
+		}
+		adjusted := rank - belowLo
+		if adjusted > float64(inRangeCount) {
+			results[i] = s.cfg.hi
+			continue
+		}
+		walk = append(walk, walkEntry{idx: i, rank: adjusted})
+	}
+
+	if len(walk) == 0 {
+		return results
+	}
+
+	// Sort by rank for a single ascending pass through the buckets.
+	sort.Slice(walk, func(i, j int) bool {
+		return walk[i].rank < walk[j].rank
+	})
+
+	n := len(s.Counts)
+
+	// Compute densities once (same as ValueAtQuantile).
+	avgDensity := make([]float64, n)
+	for i := range n {
+		w := s.cfg.boundaries[i+1] - s.cfg.boundaries[i]
+		if w > 0 && s.Counts[i] > 0 {
+			avgDensity[i] = float64(s.Counts[i]) / w
+		}
+	}
+	boundaryDensity := make([]float64, n+1)
+	for i := range n {
+		switch i {
+		case 0:
+			boundaryDensity[i] = avgDensity[0]
+		default:
+			boundaryDensity[i] = (avgDensity[i-1] + avgDensity[i]) / 2.0
+		}
+	}
+
+	// Single-pass bucket walk: process all quantiles whose rank falls
+	// within each bucket before advancing to the next.
+	var cumCount float64
+	wi := 0
+	for i := range n {
+		fc := float64(s.Counts[i])
+		nextCum := cumCount + fc
+		for wi < len(walk) && nextCum >= walk[wi].rank {
+			localRank := walk[wi].rank - cumCount
+			lo := s.cfg.boundaries[i]
+			hi := s.cfg.boundaries[i+1]
+			w := hi - lo
+			if w <= 0 || fc == 0 {
+				results[walk[wi].idx] = lo
+			} else {
+				dL := boundaryDensity[i]
+				dR := boundaryDensity[i+1]
+				results[walk[wi].idx] = trapezoidalSolve(lo, w, fc, dL, dR, localRank)
+			}
+			wi++
+		}
+		cumCount = nextCum
+		if wi >= len(walk) {
+			break
+		}
+	}
+
+	// Any remaining entries (shouldn't happen, but safety).
+	for ; wi < len(walk); wi++ {
+		results[walk[wi].idx] = s.cfg.boundaries[n]
+	}
+
+	return results
 }
 
 // Mean returns the mean of all recorded values. Returns NaN if no
