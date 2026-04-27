@@ -389,3 +389,23 @@ func (s *Snapshot) Merge(other *Snapshot) Snapshot {
 	}
 	return merged
 }
+
+// Sub returns a new Snapshot whose counts are the element-wise difference
+// of s minus other. Both snapshots must share the same config. This is used
+// to compute windowed views by subtracting a baseline snapshot from a
+// current cumulative snapshot.
+func (s *Snapshot) Sub(other *Snapshot) Snapshot {
+	diff := Snapshot{
+		cfg:        s.cfg,
+		Counts:     make([]uint64, len(s.Counts)),
+		ZeroCount:  s.ZeroCount - other.ZeroCount,
+		Underflow:  s.Underflow - other.Underflow,
+		Overflow:   s.Overflow - other.Overflow,
+		TotalCount: s.TotalCount - other.TotalCount,
+		TotalSum:   s.TotalSum - other.TotalSum,
+	}
+	for i := range s.Counts {
+		diff.Counts[i] = s.Counts[i] - other.Counts[i]
+	}
+	return diff
+}
