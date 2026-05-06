@@ -74,17 +74,58 @@ mean := snap.Mean()
 count, sum := snap.Total()
 ```
 
-### Export to Prometheus
+### Register with Prometheus
+
+A histogram can be registered with a Prometheus registry via
+`ToPrometheusCollector`. Recording is done directly on the histogram;
+the collector only participates in the scrape path.
 
 ```go
-ph := snap.ToPrometheusHistogram() // *prometheusgo.Histogram
+h := goodhistogram.New(goodhistogram.Params{
+    Lo:         500,
+    Hi:         60e9,
+    ErrorBound: 0.10,
+})
+
+desc := prometheus.NewDesc("request_duration_ns", "Request duration in nanoseconds", nil, nil)
+prometheus.MustRegister(h.ToPrometheusCollector(desc))
+
+// Hot path — record directly on the histogram.
+h.Record(durationNs)
 ```
 
-The returned proto includes both conventional cumulative buckets (for
+The collector exports both conventional cumulative buckets (for
 backward compatibility with classic Prometheus) and native histogram
 sparse fields (schema, spans, deltas). Because the internal bucket
 indices are Prometheus bucket keys by construction, export is a direct
 copy with no remapping.
+
+### Labeled histograms (HistogramVec)
+
+For multi-dimensional histograms partitioned by label values, use
+`HistogramVec`. It implements `prometheus.Collector` so the entire
+vec can be registered with a registry.
+
+```go
+vec := goodhistogram.NewHistogramVec(
+    goodhistogram.Params{Lo: 500, Hi: 60e9, ErrorBound: 0.10},
+    "request_duration_ns", "Request duration in nanoseconds",
+    []string{"method", "path"},
+)
+prometheus.MustRegister(vec)
+
+// Hot path — WithLabelValues returns a *Histogram for direct recording.
+vec.WithLabelValues("GET", "/api").Record(durationNs)
+```
+
+### Export to Prometheus proto
+
+If you need the proto directly (e.g. for remote write or custom
+export), use `ToPrometheusHistogram` on a snapshot:
+
+```go
+ph := snap.ToPrometheusHistogram() // *prometheusgo.Histogram
+```
 
 
 ## How it works
