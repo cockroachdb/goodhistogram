@@ -10,16 +10,18 @@ package goodhistogram
 
 import (
 	"fmt"
-	"math"
 	"math/rand"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
-// TestValuesAtQuantilesIntoAgreesWithSnapshot checks that ValuesAtQuantilesInto produces
-// the same numbers as Snapshot().ValuesAtQuantiles() across distributions.
-// They should agree exactly because both use the same trapezoidal
-// interpolation and matching boundary-density logic (including the
-// existing right-edge dR=0 quirk).
+// TestValuesAtQuantilesIntoAgreesWithSnapshot checks that
+// ValuesAtQuantilesInto produces exactly the same numbers as
+// Snapshot().ValuesAtQuantiles() across distributions. Equality is
+// bit-for-bit: both paths feed identical arguments to trapezoidalSolve in
+// the same order.
 func TestValuesAtQuantilesIntoAgreesWithSnapshot(t *testing.T) {
 	qs := []float64{0.0, 0.001, 0.01, 0.5, 0.75, 0.9, 0.95, 0.99, 0.999, 1.0}
 
@@ -40,13 +42,67 @@ func TestValuesAtQuantilesIntoAgreesWithSnapshot(t *testing.T) {
 			got := h.ValuesAtQuantilesInto(buf[:0], qs)
 
 			for i, q := range qs {
-				if math.Abs(got[i]-want[i]) > 1e-6*math.Max(1, math.Abs(want[i])) {
+				if got[i] != want[i] {
 					t.Errorf("q=%g: ValuesAtQuantilesInto=%g, ValuesAtQuantiles=%g (diff=%g)",
 						q, got[i], want[i], got[i]-want[i])
 				}
 			}
 		})
 	}
+}
+
+// TestValuesAtQuantilesIntoConcurrentWithRecord runs Record and
+// ValuesAtQuantilesInto concurrently to lock in the lock-free contract
+// under -race: any future change that introduces a data race (e.g.
+// sharing scratch state across callers) will be caught here.
+func TestValuesAtQuantilesIntoConcurrentWithRecord(t *testing.T) {
+	h := newGoodHist()
+	qs := []float64{0.5, 0.9, 0.99}
+
+	// Pre-seed so readers don't observe a transient total==0 (which
+	// returns zeros, not in-range values). The race detector is the
+	// primary signal; the range assertion is just a sanity check.
+	seedRng := rand.New(rand.NewSource(7))
+	for i := 0; i < 1000; i++ {
+		h.Record(int64(benchLo + seedRng.Float64()*benchRange))
+	}
+
+	const writers = 4
+	const readers = 4
+	var stop atomic.Bool
+	var wg sync.WaitGroup
+
+	for w := 0; w < writers; w++ {
+		wg.Add(1)
+		go func(seed int64) {
+			defer wg.Done()
+			rng := rand.New(rand.NewSource(seed))
+			for !stop.Load() {
+				h.Record(int64(benchLo + rng.Float64()*benchRange))
+			}
+		}(int64(w + 1))
+	}
+
+	for r := 0; r < readers; r++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			var buf [4]float64
+			for !stop.Load() {
+				got := h.ValuesAtQuantilesInto(buf[:0], qs)
+				for i, v := range got {
+					if v < benchLo || v > benchHi {
+						t.Errorf("q=%g: out-of-range value %g", qs[i], v)
+						return
+					}
+				}
+			}
+		}()
+	}
+
+	time.Sleep(100 * time.Millisecond)
+	stop.Store(true)
+	wg.Wait()
 }
 
 // TestValuesAtQuantilesIntoEdges checks zero-count and edge-only inputs.
