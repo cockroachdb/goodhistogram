@@ -8,7 +8,7 @@
 
 package goodhistogram
 
-// QueryQuantiles writes estimated values at the given quantiles into dst and
+// ValuesAtQuantilesInto writes estimated values at the given quantiles into dst and
 // returns dst[:len(qs)]. It reads live atomic counters directly without
 // materializing a Snapshot.
 //
@@ -21,9 +21,9 @@ package goodhistogram
 // tail, which is harmless.
 //
 // qs MUST be sorted in ascending order. dst must have cap >= len(qs); pass a
-// stack-backed slice (e.g. var buf [4]float64; h.QueryQuantiles(buf[:0], qs))
+// stack-backed slice (e.g. var buf [4]float64; h.ValuesAtQuantilesInto(buf[:0], qs))
 // to make the call fully alloc-free.
-func (h *Histogram) QueryQuantiles(dst, qs []float64) []float64 {
+func (h *Histogram) ValuesAtQuantilesInto(dst, qs []float64) []float64 {
 	dst = dst[:len(qs)]
 	if len(qs) == 0 {
 		return dst
