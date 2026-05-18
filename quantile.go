@@ -95,17 +95,16 @@ func (s *Snapshot) ValueAtQuantile(q float64) float64 {
 	}
 
 	// Step 2: Estimate density at each boundary by averaging neighbors.
-	// boundaryDensity has length n+1 (one per boundary).
+	// boundaryDensity has length n+1 (one per boundary). At the outer edges
+	// there is no neighbor on one side, so we use the adjacent bucket's
+	// density directly rather than averaging with zero — otherwise the
+	// rightmost-bucket interpolation gets biased low (which matters a lot
+	// for p99 in long-tailed distributions).
 	boundaryDensity := make([]float64, n+1)
-	for i := range n {
-		switch i {
-		case 0:
-			boundaryDensity[i] = avgDensity[0]
-		case n:
-			boundaryDensity[i] = avgDensity[n-1]
-		default:
-			boundaryDensity[i] = (avgDensity[i-1] + avgDensity[i]) / 2.0
-		}
+	boundaryDensity[0] = avgDensity[0]
+	boundaryDensity[n] = avgDensity[n-1]
+	for i := 1; i < n; i++ {
+		boundaryDensity[i] = (avgDensity[i-1] + avgDensity[i]) / 2.0
 	}
 
 	// Step 3: Walk buckets to find which one contains the target rank,
@@ -220,13 +219,10 @@ func (s *Snapshot) ValuesAtQuantiles(qs []float64) []float64 {
 		}
 	}
 	boundaryDensity := make([]float64, n+1)
-	for i := range n {
-		switch i {
-		case 0:
-			boundaryDensity[i] = avgDensity[0]
-		default:
-			boundaryDensity[i] = (avgDensity[i-1] + avgDensity[i]) / 2.0
-		}
+	boundaryDensity[0] = avgDensity[0]
+	boundaryDensity[n] = avgDensity[n-1]
+	for i := 1; i < n; i++ {
+		boundaryDensity[i] = (avgDensity[i-1] + avgDensity[i]) / 2.0
 	}
 
 	// Single-pass bucket walk: process all quantiles whose rank falls
