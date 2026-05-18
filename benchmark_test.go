@@ -54,10 +54,10 @@ func newPromNativeHist() prometheus.Histogram {
 	factor := factorBySchema[benchSchema]
 	buckets := prometheus.ExponentialBucketsRange(benchLo, benchHi, promBucketCount)
 	return prometheus.NewHistogram(prometheus.HistogramOpts{
-		Name:                          "bench",
-		Help:                          "benchmark histogram",
-		Buckets:                       buckets,
-		NativeHistogramBucketFactor:   factor,
+		Name:                           "bench",
+		Help:                           "benchmark histogram",
+		Buckets:                        buckets,
+		NativeHistogramBucketFactor:    factor,
 		NativeHistogramMaxBucketNumber: 1000,
 	})
 }
