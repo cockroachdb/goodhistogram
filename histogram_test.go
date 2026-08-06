@@ -947,3 +947,35 @@ func TestPrometheusExport(t *testing.T) {
 		require.Equal(t, uint64(1001), total)
 	})
 }
+
+// TestNativeHistogramBounds guards the transcribed boundary table against both
+// transcription errors and any temptation to recompute it at init time. The
+// exact-value assertions are the ones that matter: they are the entries where
+// math.Pow disagrees with the canonical table (and, on some entries, with
+// itself across architectures).
+func TestNativeHistogramBounds(t *testing.T) {
+	for s := 0; s <= maxSchema; s++ {
+		bounds := nativeHistogramBounds[s]
+		require.Len(t, bounds, 1<<s)
+		require.Equal(t, 0.5, bounds[0])
+		for j, b := range bounds {
+			require.GreaterOrEqual(t, b, 0.5)
+			require.Less(t, b, 1.0)
+			if j > 0 {
+				require.Greater(t, b, bounds[j-1])
+			}
+			// Approximately 2^(j / 2^s) / 2. Deliberately not an equality
+			// check: math.Pow is not bit-portable, which is the whole reason
+			// the table is spelled out rather than computed. A few ULP of
+			// slack is still tight enough to catch a transcription error.
+			want := math.Ldexp(math.Pow(2, float64(j)/float64(int(1)<<s)), -1)
+			require.InEpsilon(t, want, b, 1e-15)
+		}
+	}
+
+	// Exact bit-for-bit values, as published by Prometheus.
+	require.Equal(t, 0.7071067811865475, nativeHistogramBounds[1][1])
+	require.Equal(t, 0.8408964152537144, nativeHistogramBounds[2][3])
+	require.Equal(t, 0.5946035575013605, nativeHistogramBounds[2][1])
+	require.Equal(t, 0.9972960560854698, nativeHistogramBounds[8][255])
+}
