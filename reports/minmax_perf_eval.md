@@ -39,10 +39,12 @@ independent variable:
   every call. Adversarial worst case.
 - **descending** — monotonically decreasing: every `Record` sets a new min.
 
-Machine: Apple M3 Pro (arm64), schema 2, range [500, 6e10], `-count=8`.
-Raw data: `minmax_raw.txt`; benchstat: `minmax_benchstat.txt`.
+Run on two machines, schema 2, range [500, 6e10], `-count=8`:
+- **arm64** — Apple M3 Pro (laptop). Raw: `minmax_raw_arm64.txt`; benchstat: `minmax_benchstat_arm64.txt`.
+- **amd64** — GCE worker `gceworker-briandillmann`, 24 vCPU x86_64, Go 1.25.5.
+  Raw: `minmax_raw_amd64.txt`; benchstat: `minmax_benchstat_amd64.txt`.
 
-## Results
+## Results — arm64 (Apple M3 Pro)
 
 ### Single-threaded (sec/op, vs. baseline)
 
@@ -63,42 +65,75 @@ Raw data: `minmax_raw.txt`; benchstat: `minmax_benchstat.txt`.
 | g=100, ascending    | 55.2n    | 53.0n (~, n.s.) | 60.4n (~, n.s.) |
 | g=100, descending   | 41.1n    | 37.0n (~, n.s.) | 63.9n (+55.4%)  |
 
-("~, n.s." = not statistically significant, p > 0.05.)
+("~, n.s." = not statistically significant, p > 0.05.) The M3's contention
+numbers are noisy (baseline ±10–40%), which is why several deltas land as n.s.
+
+## Results — amd64 (GCE worker, 24 vCPU x86_64)
+
+Far lower variance (±0–2%), so every delta below is significant (p < 0.001).
+Note the ~8× higher absolute per-op cost than the M3 — the GCE vCPU has much
+lower single-thread throughput than Apple silicon; the *relative* overhead is
+what transfers.
+
+### Single-threaded (sec/op, vs. baseline)
+
+| ordering   | baseline | minmax          | padded          |
+|------------|----------|-----------------|-----------------|
+| steady     | 20.86n   | 23.00n (+10.3%) | 22.71n (+8.9%)  |
+| ascending  | 20.86n   | 22.98n (+10.2%) | 22.68n (+8.7%)  |
+| descending | 20.88n   | 23.02n (+10.3%) | 22.67n (+8.6%)  |
+
+### High contention (sec/op, vs. baseline)
+
+| ordering            | baseline | minmax          | padded           |
+|---------------------|----------|-----------------|------------------|
+| g=50, steady        | 39.70n   | 43.83n (+10.4%) | 44.18n (+11.3%)  |
+| g=50, ascending     | 39.00n   | 43.16n (+10.7%) | 43.38n (+11.2%)  |
+| g=50, descending    | 38.91n   | 42.97n (+10.4%) | 43.22n (+11.1%)  |
+| g=100, steady       | 39.57n   | 43.68n (+10.4%) | 42.93n (+8.5%)   |
+| g=100, ascending    | 39.29n   | 42.75n (+8.8%)  | 44.46n (+13.2%)  |
+| g=100, descending   | 38.27n   | 42.78n (+11.8%) | 44.74n (+16.9%)  |
 
 ## Findings
 
-1. **Single-threaded overhead is small in absolute terms: ~0.7–0.8 ns/op**
-   (+25–30% on a ~2.7 ns baseline). Even the adversarial ascending case
-   (CAS on *every* call) costs only ~0.8 ns more — an uncontended CAS is nearly
-   as cheap as the guard load, so worst-case ≈ steady-state single-threaded.
+1. **The overhead is real but small and roughly constant per op.** In absolute
+   terms it's ~0.7–0.8 ns/op on the M3 and ~2.1 ns/op single-threaded / ~4 ns/op
+   under contention on the GCE x86 worker. As a fraction of `Record` it lands at
+   **+10% on x86** and +25–30% single-threaded on the (much faster, so
+   higher-fraction) M3. The x86 run is the trustworthy one for the *relative*
+   number: its variance is ±0–2% so every delta is significant, whereas the M3's
+   contention noise (±10–40%) swallowed the signal and made several deltas read
+   as "no change."
 
-2. **Under contention, inline min/max is effectively free.** In 5 of 6 cases the
-   inline `minmax` variant is statistically indistinguishable from baseline
-   (often nominally faster, within noise). The contended `sum.Add` already
-   dominates the hot path; two read-mostly guard loads that land on an
-   already-bounced cache line add nothing measurable. Contention runs are noisy
-   (baseline itself ±10–30%), so treat these as "no detectable regression"
-   rather than precise deltas.
+2. **Input ordering doesn't matter — the guard load makes the CAS nearly free.**
+   On x86, steady / ascending / descending all cost within ~1% of each other,
+   single-threaded *and* under 50–100-goroutine contention. Even the adversarial
+   monotonic orderings (a new extreme on many calls) don't blow up: an
+   uncontended CAS is about as cheap as the guard load it follows, and under
+   contention each goroutine replays the same array, so the shared extreme
+   settles after the first pass and later CAS attempts short-circuit. (A truly
+   unbounded monotonic stream across all goroutines would contend harder; not
+   tested here.)
 
-3. **Cache-line padding is a pessimization here — the counterintuitive result.**
-   The `padded` variant is consistently *worse* than inline under contention
-   (up to +55%). Padding is the standard fix for false sharing, but the extremes
-   are **read-mostly**: in the inline layout their guard loads piggyback on the
-   `sum` cache line the core already owns each iteration (it just did `sum.Add`).
-   Padding moves them onto two *separate* lines that must be fetched
-   additionally, tripling the hot coherence footprint (1 line → 3). Co-locating
-   the extremes with the already-hot `sum` is the right call; do **not** pad.
+3. **Cache-line padding is not worth it, and on arm64 it actively hurts.** On
+   the M3 the padded variant was consistently *worse* than inline under
+   contention (up to +55%); on x86 it's roughly a wash (±a few %, occasionally
+   worse at g=100). The extremes are **read-mostly**, so in the inline layout
+   their guard loads piggyback on the `sum` cache line the core already touches
+   each iteration (it just did `sum.Add`); padding moves them onto separate
+   lines that must be fetched additionally. Co-locating with `sum` is at least
+   as good everywhere and strictly better on arm64 — do **not** pad.
 
 ## Recommendation
 
-Exact min/max tracking is cheap enough to add: **~0.8 ns/op single-threaded and
-no detectable regression under contention**, zero extra allocations. Use the
-**inline** layout (`minmax` variant) and keep the load-guarded CAS. Avoid
-cache-line padding.
+Exact min/max tracking is cheap enough to add: a **consistent ~10% `Record`
+overhead on x86** (~2–4 ns/op) and low-single-digit ns on Apple silicon, with
+zero extra allocations. Use the **inline** layout (`minmax` variant) with the
+load-guarded CAS; skip the padding.
 
-If the ~0.8 ns single-threaded cost ever matters on an ultra-hot path, the guard
-load is what makes it cheap — no cheaper exact scheme exists (exact extremes
-fundamentally require CAS, not fetch-and-add). An approximate alternative would
-be to derive min/max from the populated bucket edges at `Snapshot` time for
-**zero** hot-path cost, at the price of bucket-width error (≤ the configured
-relative error bound) instead of exact values.
+If that ~10% ever matters on an ultra-hot path, note the guard load is already
+what keeps it cheap — no cheaper *exact* scheme exists (exact extremes
+fundamentally need CAS, not fetch-and-add). The zero-hot-path-cost alternative
+is to derive approximate min/max from the populated bucket edges at `Snapshot`
+time, trading exactness for bucket-width error (≤ the configured relative error
+bound).
