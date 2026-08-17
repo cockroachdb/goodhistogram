@@ -307,6 +307,26 @@ type Histogram struct {
 	// ZeroCount counts exact zeros (and negative values).
 	ZeroCount atomic.Uint64
 	sum       atomic.Int64 // using Int64 since CockroachDB histograms record int64
+
+	// min/max track the exact smallest and largest values recorded, for
+	// the perf-eval of exact extreme tracking. Updated only by the
+	// RecordMinMax* variants. min is seeded to MaxInt64 and max to
+	// MinInt64 so the first observation always wins.
+	min atomic.Int64
+	max atomic.Int64
+
+	// minP/maxP are cache-line-padded variants of min/max, used by
+	// RecordMinMaxPadded to isolate the false-sharing cost of placing the
+	// extremes next to the hot sum counter on the same cache line.
+	minP paddedInt64
+	maxP paddedInt64
+}
+
+// paddedInt64 is an atomic.Int64 padded to a full 64-byte cache line so
+// that updates to it do not invalidate neighbouring fields (false sharing).
+type paddedInt64 struct {
+	v atomic.Int64
+	_ [56]byte // 64 - 8 bytes
 }
 
 // Reset zeroes all counters without reallocating the backing slice.
@@ -325,10 +345,15 @@ func (h *Histogram) Reset() {
 func New(p Params) *Histogram {
 	p = p.withDefaults()
 	cfg := getOrCreateConfig(p)
-	return &Histogram{
+	h := &Histogram{
 		cfg:    cfg,
 		counts: make([]atomic.Uint64, cfg.numBuckets),
 	}
+	h.min.Store(math.MaxInt64)
+	h.max.Store(math.MinInt64)
+	h.minP.v.Store(math.MaxInt64)
+	h.maxP.v.Store(math.MinInt64)
+	return h
 }
 
 // Record adds a value to the histogram. This is the hot path: O(1), lock-free,
