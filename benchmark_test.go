@@ -30,9 +30,13 @@ const (
 	benchSchema     int32   = 2
 	benchLo         float64 = 500
 	benchHi         float64 = 6e10
-	benchErrBound           = 0.10 // 10% relative error → schema 2
-	promBucketCount         = 60   // CockroachDB's standard bucket count
+	promBucketCount         = 60 // CockroachDB's standard bucket count
 )
+
+// benchErrBound is the error bound that resolves to benchSchema. It is derived
+// from the schema's worst-case relative error (γ-1) so the benchmarks stay
+// pinned to schema 2 regardless of the exact bound arithmetic.
+var benchErrBound = schemaRelativeError(benchSchema)
 
 // benchRange is benchHi - benchLo, used by samplers.
 const benchRange = benchHi - benchLo
@@ -54,10 +58,10 @@ func newPromNativeHist() prometheus.Histogram {
 	factor := factorBySchema[benchSchema]
 	buckets := prometheus.ExponentialBucketsRange(benchLo, benchHi, promBucketCount)
 	return prometheus.NewHistogram(prometheus.HistogramOpts{
-		Name:                          "bench",
-		Help:                          "benchmark histogram",
-		Buckets:                       buckets,
-		NativeHistogramBucketFactor:   factor,
+		Name:                           "bench",
+		Help:                           "benchmark histogram",
+		Buckets:                        buckets,
+		NativeHistogramBucketFactor:    factor,
 		NativeHistogramMaxBucketNumber: 1000,
 	})
 }

@@ -61,11 +61,31 @@ func init() {
 	}
 }
 
-// schemaRelativeError returns the relative error for a given schema.
-// The error is (γ-1)/(γ+1) where γ = 2^(2^(-schema)).
+// schemaRelativeError returns the worst-case relative error for a given
+// schema, i.e. the tightest error bound the histogram can actually honor at
+// that resolution.
+//
+// The error is γ-1 where γ = 2^(2^(-schema)).
+//
+// Note that this differs from DDSketch and from the classic exponential-bucket
+// analysis, which report (γ-1)/(γ+1). That figure is the relative error of a
+// bucket's *midpoint*: for a bucket [b, γ·b], the point m = 2γb/(γ+1) is
+// equidistant (in relative terms) from both edges, so reporting m guarantees
+// error at most (γ-1)/(γ+1). DDSketch relies on this because it always reports
+// the midpoint.
+//
+// goodhistogram does not. Its quantile estimator (see ValueAtQuantile) uses the
+// shape of the observed distribution to interpolate a value that may lie
+// anywhere in [b, γ·b], including the edges. The worst case is a value whose
+// true location is the bucket start b but which is reported at the end γ·b (or
+// vice versa): the relative error is then (γ·b - b)/b = γ-1. Reporting the
+// midpoint bound would understate this by roughly a factor of two and let real
+// estimates exceed the configured bound — see
+// https://github.com/cockroachdb/goodhistogram/issues/9. So the honest bound,
+// and the one pickSchema must satisfy, is γ-1.
 func schemaRelativeError(schema int32) float64 {
 	gamma := math.Pow(2, math.Pow(2, float64(-schema)))
-	return (gamma - 1) / (gamma + 1)
+	return gamma - 1
 }
 
 // pickSchema selects the coarsest (fewest buckets) Prometheus schema whose
@@ -167,10 +187,10 @@ func newConfig(lo, hi, desiredError float64) config {
 	// values always round up to the next bucket — at most one
 	// bucket of additional error for a small fraction of values.
 	//
-	// For the common schema 2 (10% error), only 4 of 256 entries
-	// straddle, affecting ~0.4% of recorded values. The maximum
+	// For the common schema 2 (γ-1 = 18.9% worst-case error), only 4 of
+	// 256 entries straddle, affecting ~0.4% of recorded values. The maximum
 	// additional error for those values is bounded by one bucket width
-	// (8.6%), but the impact on quantile estimation is negligible since
+	// (γ-1), but the impact on quantile estimation is negligible since
 	// the affected values are already near the boundary.
 	var bucketLookup [bucketLookupSize]uint8
 	for tableIdx := 0; tableIdx < bucketLookupSize; tableIdx++ {
@@ -204,7 +224,7 @@ func newConfig(lo, hi, desiredError float64) config {
 // Zero-value fields are replaced with defaults:
 //   - Lo: 1
 //   - Hi: math.MaxInt64
-//   - ErrorBound: 0.10 (10%, schema 2)
+//   - ErrorBound: 0.10 (10%, schema 3)
 type Params struct {
 	// Lo and Hi define the tracked value range. Values outside this range
 	// are counted in Underflow/Overflow.
@@ -214,6 +234,49 @@ type Params struct {
 	// this value.
 	ErrorBound float64
 }
+
+// Resolution presets. These cover the full recordable range — the smallest
+// possible lower bound (1) and the largest possible upper bound
+// (math.MaxInt64) — so they are general purpose: pick one by the accuracy you
+// need, not by the range you expect. Each pins a specific Prometheus schema,
+// and therefore a specific worst-case relative error and memory footprint.
+//
+// The worst-case relative error is γ-1 (see schemaRelativeError): a reported
+// quantile is guaranteed to be within this fraction of the true value. Memory
+// is dominated by the per-histogram counts array; the boundary/lookup tables
+// live in a single shared, cached config regardless of how many histograms use
+// the preset.
+var (
+	// CoarseParams uses schema 1: ~41.4% worst-case relative error.
+	// Full range [1, math.MaxInt64] spans 126 buckets ≈ 1 KB per histogram.
+	// The lightest option — use when you only need order-of-magnitude
+	// quantiles and want to minimize memory across many series.
+	CoarseParams = Params{
+		Lo:         1,
+		Hi:         float64(math.MaxInt64),
+		ErrorBound: schemaRelativeError(1),
+	}
+
+	// StandardParams uses schema 2: ~18.9% worst-case relative error.
+	// Full range [1, math.MaxInt64] spans 252 buckets ≈ 2 KB per histogram.
+	// A middle ground between resolution and memory, matching the schema
+	// CockroachDB latency histograms have historically used.
+	StandardParams = Params{
+		Lo:         1,
+		Hi:         float64(math.MaxInt64),
+		ErrorBound: schemaRelativeError(2),
+	}
+
+	// FineParams uses schema 3: ~9.05% worst-case relative error.
+	// Full range [1, math.MaxInt64] spans 504 buckets ≈ 4 KB per histogram.
+	// The most accurate of the three and roughly 4x the memory of Coarse —
+	// use when quantile fidelity matters more than footprint.
+	FineParams = Params{
+		Lo:         1,
+		Hi:         float64(math.MaxInt64),
+		ErrorBound: schemaRelativeError(3),
+	}
+)
 
 // Common Params presets, modeled after the bucket tiers in CockroachDB's
 // pkg/util/metric/histogram_buckets.go and Prometheus DefBuckets.

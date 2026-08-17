@@ -57,12 +57,37 @@ go get github.com/cockroachdb/goodhistogram
 h := goodhistogram.New(goodhistogram.Params{
     Lo:           500,    // lower bound of tracked range (e.g. 500ns)
     Hi:           60e9,   // upper bound (e.g. 60s in nanoseconds)
-    ErrorBound: 0.10,   // 10% relative error → schema 2
+    ErrorBound: 0.10,   // 10% worst-case relative error → schema 3
 })
 
 h.Record(1_500_000)  // 1.5ms
 h.Record(42_000)     // 42µs
 ```
+
+`ErrorBound` is the *worst-case* relative error of a reported quantile: any
+estimate is guaranteed to be within this fraction of the true value. See
+[Error bounds](#error-bounds) for what this guarantees and why it differs from
+DDSketch's relative accuracy.
+
+### Resolution presets
+
+If you don't have a specific range in mind, the resolution presets cover the
+full recordable range `[1, math.MaxInt64]` and differ only in accuracy and
+memory. Pick by the fidelity you need:
+
+| Preset | Schema | Worst-case error | Buckets | Memory / histogram |
+|---|---:|---:|---:|---:|
+| `CoarseParams` | 1 | ~41.4% | 126 | ~1 KB |
+| `StandardParams` | 2 | ~18.9% | 252 | ~2 KB |
+| `FineParams` | 3 | ~9.05% | 504 | ~4 KB |
+
+```go
+h := goodhistogram.New(goodhistogram.StandardParams)
+```
+
+Memory is dominated by the per-histogram counts array; the boundary and lookup
+tables live in a single shared, cached config, so allocating many histograms
+from the same preset does not multiply that overhead.
 
 ### Take a snapshot and compute quantiles
 
@@ -151,9 +176,11 @@ What makes it different from these libraries is the following:
 goodhistogram uses the same exponential bucket scheme as Prometheus
 native histograms. For a given schema *s*, each power-of-two octave is
 divided into 2^*s* buckets with boundaries at 2^(*j*/2^*s*). The
-schema is chosen as the coarsest one whose relative error
-(*gamma* - 1)/(*gamma* + 1) is at or below the requested `ErrorBound`,
-where *gamma* = 2^(2^(-*s*)).
+schema is chosen as the coarsest one whose worst-case relative error
+*gamma* - 1 is at or below the requested `ErrorBound`,
+where *gamma* = 2^(2^(-*s*)). See [Error bounds](#error-bounds) for why the
+bound is *gamma* - 1 rather than the (*gamma* - 1)/(*gamma* + 1) figure used by
+DDSketch.
 
 At construction, a fixed array of `atomic.Uint64` counters is allocated
 covering the range `[Lo, Hi]`. The number of buckets is determined by
@@ -196,6 +223,35 @@ uniform-density (log-linear) interpolation used by Prometheus:
 This produces more accurate estimates when the true density is not uniform
 within a bucket, which is nearly always the case for real-world distributions.
 This approach is described well in the base2histogram link cited above.
+
+### Error bounds
+
+`ErrorBound` is the maximum relative error of a reported quantile: for a true
+value *v*, the estimate is within `ErrorBound` × *v* of *v*.
+
+This is a stronger guarantee than the one DDSketch's relative accuracy provides,
+and it is worth being precise about the difference. For a bucket spanning
+[*b*, *gamma*·*b*], DDSketch reports the bucket's midpoint *m* = 2·*gamma*·*b* /
+(*gamma* + 1), which is equidistant in relative terms from both edges, so its
+error is at most (*gamma* - 1)/(*gamma* + 1). DDSketch can rely on that figure
+*because* it always reports the midpoint.
+
+goodhistogram does not report the midpoint. Its trapezoidal estimator uses the
+shape of the observed distribution to interpolate a value that can fall anywhere
+in [*b*, *gamma*·*b*], edges included. The worst case is a value whose true
+location is the bucket start *b* but which is reported at the end *gamma*·*b*:
+the relative error is then (*gamma*·*b* - *b*)/*b* = *gamma* - 1 — roughly twice
+the midpoint figure.
+
+Earlier versions selected the schema using the midpoint figure, so a histogram
+configured for, say, 10% error used schema 2 (midpoint error 8.6%) while its
+reported quantiles could drift up to *gamma* - 1 = 18.9% — visibly violating the
+configured bound
+([#9](https://github.com/cockroachdb/goodhistogram/issues/9)). Schema selection
+now uses *gamma* - 1, so the configured `ErrorBound` is the bound quantiles
+actually honor. The practical effect is that a given `ErrorBound` now selects a
+finer schema than before (10% now picks schema 3, not schema 2), trading a
+modest amount of extra memory for a guarantee that holds.
 
 ### Sacrifices in Accuracy
 

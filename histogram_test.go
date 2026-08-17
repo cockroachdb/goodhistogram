@@ -24,15 +24,19 @@ func TestPickSchema(t *testing.T) {
 		desiredError float64
 		wantSchema   int32
 	}{
-		{0.35, 0},  // 33.3% error for schema 0
-		{0.10, 2},  // 8.6% error for schema 2
-		{0.05, 3},  // 4.3% error for schema 3
-		{0.03, 4},  // 2.17% error for schema 4
-		{0.02, 5},  // schema 4 is 2.17% > 2%, so need schema 5 (1.08%)
-		{0.015, 5}, // 1.08% for schema 5
-		{0.005, 7}, // schema 6 is 0.54% > 0.5%, so need schema 7 (0.27%)
-		{0.003, 7}, // 0.27% for schema 7
-		{0.002, 8}, // 0.14% for schema 8
+		// Worst-case relative error per schema is γ-1: schema 0 100%,
+		// 1 41.4%, 2 18.9%, 3 9.05%, 4 4.43%, 5 2.19%, 6 1.09%, 7 0.54%,
+		// 8 0.27%. pickSchema returns the coarsest schema at or below the
+		// requested bound.
+		{0.35, 2},  // schema 1 is 41.4% > 35%, so need schema 2 (18.9%)
+		{0.10, 3},  // schema 2 is 18.9% > 10%, so need schema 3 (9.05%)
+		{0.05, 4},  // schema 3 is 9.05% > 5%, so need schema 4 (4.43%)
+		{0.03, 5},  // schema 4 is 4.43% > 3%, so need schema 5 (2.19%)
+		{0.02, 6},  // schema 5 is 2.19% > 2%, so need schema 6 (1.09%)
+		{0.015, 6}, // 1.09% for schema 6
+		{0.005, 8}, // schema 7 is 0.54% > 0.5%, so need schema 8 (0.27%)
+		{0.003, 8}, // 0.27% for schema 8
+		{0.002, 8}, // schema 8 is finest available, though 0.27% > 0.2%
 		{0.001, 8}, // still schema 8 (finest available)
 	}
 	for _, tt := range tests {
@@ -51,10 +55,39 @@ func TestPickSchema(t *testing.T) {
 	}
 }
 
+func TestResolutionPresets(t *testing.T) {
+	tests := []struct {
+		name       string
+		params     Params
+		wantSchema int32
+		wantBucket int // full-range bucket count
+	}{
+		{"Coarse", CoarseParams, 1, 126},
+		{"Standard", StandardParams, 2, 252},
+		{"Fine", FineParams, 3, 504},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Presets span the full recordable range.
+			require.Equal(t, float64(1), tt.params.Lo)
+			require.Equal(t, float64(math.MaxInt64), tt.params.Hi)
+
+			h := New(tt.params)
+			require.Equal(t, tt.wantSchema, h.Schema())
+			require.Equal(t, tt.wantBucket, h.cfg.numBuckets)
+
+			// The configured ErrorBound must be the worst-case error the
+			// chosen schema actually delivers (γ-1) — the whole point of the
+			// preset is that the bound is honored, not understated.
+			require.InEpsilon(t, schemaRelativeError(tt.wantSchema), tt.params.ErrorBound, 1e-12)
+		})
+	}
+}
+
 func TestNewConfig(t *testing.T) {
 	t.Run("basic", func(t *testing.T) {
 		cfg := newConfig(1e4, 1e16, 0.05)
-		require.Equal(t, int32(3), cfg.schema) // 4.3% error
+		require.Equal(t, int32(4), cfg.schema) // 4.43% worst-case error
 		require.Greater(t, cfg.numBuckets, 0)
 		require.Equal(t, cfg.numBuckets+1, len(cfg.boundaries))
 		require.Equal(t, 1e4, cfg.boundaries[0])
