@@ -39,10 +39,12 @@ independent variable:
   every call. Adversarial worst case.
 - **descending** — monotonically decreasing: every `Record` sets a new min.
 
-Run on two machines, schema 2, range [500, 6e10], `-count=8`:
-- **arm64** — Apple M3 Pro (laptop). Raw: `minmax_raw_arm64.txt`; benchstat: `minmax_benchstat_arm64.txt`.
-- **amd64** — GCE worker `gceworker-briandillmann`, 24 vCPU x86_64, Go 1.25.5.
+Run on three machines, schema 2, range [500, 6e10], `-count=8`:
+- **arm64 (laptop)** — Apple M3 Pro. Raw: `minmax_raw_arm64.txt`; benchstat: `minmax_benchstat_arm64.txt`.
+- **amd64 (server)** — GCE `gceworker-briandillmann`, 24 vCPU x86_64, Go 1.25.5.
   Raw: `minmax_raw_amd64.txt`; benchstat: `minmax_benchstat_amd64.txt`.
+- **arm64 (server)** — GCE `t2a-standard-8`, 8 vCPU Ampere Altra (Neoverse N1), Go 1.25.5.
+  Raw: `minmax_raw_arm64_server.txt`; benchstat: `minmax_benchstat_arm64_server.txt`.
 
 ## Results — arm64 (Apple M3 Pro)
 
@@ -94,42 +96,69 @@ what transfers.
 | g=100, ascending    | 39.29n   | 42.75n (+8.8%)  | 44.46n (+13.2%)  |
 | g=100, descending   | 38.27n   | 42.78n (+11.8%) | 44.74n (+16.9%)  |
 
+## Results — arm64 server (GCE t2a-standard-8, 8 vCPU Ampere Altra)
+
+Single-thread variance is tight (±1%); contention is noisy like the M3.
+
+### Single-threaded (sec/op, vs. baseline)
+
+| ordering   | baseline | minmax          | padded          |
+|------------|----------|-----------------|-----------------|
+| steady     | 13.36n   | 15.08n (+12.9%) | 15.05n (+12.7%) |
+| ascending  | 13.30n   | 15.03n (+13.0%) | 15.04n (+13.1%) |
+| descending | 13.21n   | 15.04n (+13.9%) | 14.99n (+13.5%) |
+
+### High contention (sec/op, vs. baseline)
+
+| ordering            | baseline | minmax          | padded          |
+|---------------------|----------|-----------------|-----------------|
+| g=50, steady        | 101.8n   | 94.5n (−7.1%)   | 94.6n (−7.1%)   |
+| g=50, ascending     | 82.2n    | 89.0n (+8.2%)   | 85.5n (~, n.s.) |
+| g=50, descending    | 81.9n    | 94.3n (+15.2%)  | 88.0n (~, n.s.) |
+| g=100, steady       | 100.2n   | 96.7n (~, n.s.) | 100.1n (~, n.s.)|
+| g=100, ascending    | 98.0n    | 99.5n (~, n.s.) | 98.5n (~, n.s.) |
+| g=100, descending   | 97.3n    | 99.9n (~, n.s.) | 95.9n (~, n.s.) |
+
 ## Findings
 
-1. **The overhead is real but small and roughly constant per op.** In absolute
-   terms it's ~0.7–0.8 ns/op on the M3 and ~2.1 ns/op single-threaded / ~4 ns/op
-   under contention on the GCE x86 worker. As a fraction of `Record` it lands at
-   **+10% on x86** and +25–30% single-threaded on the (much faster, so
-   higher-fraction) M3. The x86 run is the trustworthy one for the *relative*
-   number: its variance is ±0–2% so every delta is significant, whereas the M3's
-   contention noise (±10–40%) swallowed the signal and made several deltas read
-   as "no change."
+1. **Single-threaded overhead is real, small, and consistent — ~10–13% of
+   `Record` across all three machines** (steady state): +10% on x86 server,
+   +13% on Ampere arm server, +26% on the M3 (higher only because the M3's
+   baseline `Record` is ~5–8× faster in absolute terms, so a fixed ~0.7 ns costs
+   a bigger fraction). In absolute terms it's ~0.7 ns/op (M3), ~1.7 ns/op
+   (Ampere), ~2.1 ns/op (x86). The two server runs have tight ±1% variance so
+   every single-thread delta is significant.
 
-2. **Input ordering doesn't matter — the guard load makes the CAS nearly free.**
-   On x86, steady / ascending / descending all cost within ~1% of each other,
-   single-threaded *and* under 50–100-goroutine contention. Even the adversarial
-   monotonic orderings (a new extreme on many calls) don't blow up: an
-   uncontended CAS is about as cheap as the guard load it follows, and under
-   contention each goroutine replays the same array, so the shared extreme
-   settles after the first pass and later CAS attempts short-circuit. (A truly
-   unbounded monotonic stream across all goroutines would contend harder; not
-   tested here.)
+2. **Under contention the cost disappears into the noise.** Only the x86 server
+   shows a clean, consistent +10% under contention; both arm machines (M3 and
+   Ampere) are too noisy (±5–40%) to distinguish min/max from baseline — several
+   deltas are even negative. The contended `sum.Add` already dominates, so the
+   read-mostly guard loads add little. Treat contention as "no clear regression."
 
-3. **Cache-line padding is not worth it, and on arm64 it actively hurts.** On
-   the M3 the padded variant was consistently *worse* than inline under
-   contention (up to +55%); on x86 it's roughly a wash (±a few %, occasionally
-   worse at g=100). The extremes are **read-mostly**, so in the inline layout
-   their guard loads piggyback on the `sum` cache line the core already touches
-   each iteration (it just did `sum.Add`); padding moves them onto separate
-   lines that must be fetched additionally. Co-locating with `sum` is at least
-   as good everywhere and strictly better on arm64 — do **not** pad.
+3. **Input ordering doesn't matter — the guard load makes the CAS nearly free.**
+   steady / ascending / descending land within ~1% of each other single-threaded
+   on both server machines. Even the adversarial monotonic orderings (a new
+   extreme on many calls) don't blow up: an uncontended CAS is about as cheap as
+   the guard load it follows, and under contention each goroutine replays the
+   same array, so the shared extreme settles after the first pass and later CAS
+   attempts short-circuit. (A truly unbounded global monotonic stream would
+   contend harder; not tested.)
+
+4. **Cache-line padding isn't worth it — and the "padding hurts" effect is
+   Apple-M3-specific, not arm64-general.** On the M3 the padded variant was
+   consistently *worse* than inline under contention (up to +55%); but on the
+   Ampere arm server padding is a wash (within noise), same as x86. So the
+   dramatic penalty was an M3 quirk, not an arm property. Everywhere, co-locating
+   the read-mostly extremes with the already-hot `sum` cache line (inline) is at
+   least as good as padding and never worse — so **don't pad**.
 
 ## Recommendation
 
-Exact min/max tracking is cheap enough to add: a **consistent ~10% `Record`
-overhead on x86** (~2–4 ns/op) and low-single-digit ns on Apple silicon, with
-zero extra allocations. Use the **inline** layout (`minmax` variant) with the
-load-guarded CAS; skip the padding.
+Exact min/max tracking is cheap enough to add: a **~10–13% single-threaded
+`Record` overhead** (~0.7–2 ns/op, consistent across x86 and arm servers and the
+M3 laptop), **no clear regression under contention**, and zero extra
+allocations. Use the **inline** layout (`minmax` variant) with the load-guarded
+CAS; skip the padding.
 
 If that ~10% ever matters on an ultra-hot path, note the guard load is already
 what keeps it cheap — no cheaper *exact* scheme exists (exact extremes

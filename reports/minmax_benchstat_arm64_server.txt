@@ -1,0 +1,33 @@
+arm64 Ampere Altra (GCE t2a-standard-8, 8 vCPU), Go 1.25.5
+Single-threaded (sec/op, vs baseline):
+                                      │          sec/op           │   sec/op     vs base               │   sec/op     vs base               │
+MinMaxSingleThread/order=steady-8                     13.36n ± 1%   15.08n ± 1%  +12.87% (p=0.000 n=8)   15.05n ± 1%  +12.65% (p=0.000 n=8)
+MinMaxSingleThread/order=ascending-8                  13.30n ± 1%   15.03n ± 0%  +13.01% (p=0.000 n=8)   15.04n ± 1%  +13.08% (p=0.000 n=8)
+MinMaxSingleThread/order=descending-8                 13.21n ± 1%   15.04n ± 0%  +13.86% (p=0.000 n=8)   14.99n ± 1%  +13.48% (p=0.000 n=8)
+MinMaxSingleThread/order=steady-8                    0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=8) ¹   0.000 ± 0%       ~ (p=1.000 n=8) ¹
+MinMaxSingleThread/order=ascending-8                 0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=8) ¹   0.000 ± 0%       ~ (p=1.000 n=8) ¹
+MinMaxSingleThread/order=descending-8                0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=8) ¹   0.000 ± 0%       ~ (p=1.000 n=8) ¹
+MinMaxSingleThread/order=steady-8                    0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=8) ¹   0.000 ± 0%       ~ (p=1.000 n=8) ¹
+MinMaxSingleThread/order=ascending-8                 0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=8) ¹   0.000 ± 0%       ~ (p=1.000 n=8) ¹
+MinMaxSingleThread/order=descending-8                0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=8) ¹   0.000 ± 0%       ~ (p=1.000 n=8) ¹
+
+Contention (sec/op, vs baseline):
+                                          │         sec/op          │    sec/op     vs base               │    sec/op      vs base              │
+MinMaxContention/g=50/order=steady-8                  101.80n ±  5%   94.53n ±  3%   -7.14% (p=0.001 n=8)    94.58n ±  9%  -7.09% (p=0.050 n=8)
+MinMaxContention/g=50/order=ascending-8                82.21n ±  5%   88.98n ±  7%   +8.24% (p=0.021 n=8)    85.47n ± 12%       ~ (p=0.053 n=8)
+MinMaxContention/g=50/order=descending-8               81.88n ± 13%   94.33n ±  9%  +15.21% (p=0.015 n=8)    87.97n ±  4%       ~ (p=0.279 n=8)
+MinMaxContention/g=100/order=steady-8                 100.19n ±  5%   96.70n ± 11%        ~ (p=0.425 n=8)   100.12n ±  5%       ~ (p=0.777 n=8)
+MinMaxContention/g=100/order=ascending-8               97.99n ±  6%   99.46n ±  9%        ~ (p=0.818 n=8)    98.52n ±  6%       ~ (p=0.857 n=8)
+MinMaxContention/g=100/order=descending-8              97.34n ± 39%   99.88n ± 13%        ~ (p=0.902 n=8)    95.94n ±  9%       ~ (p=0.878 n=8)
+MinMaxContention/g=50/order=steady-8                   0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=8) ¹   0.000 ± 0%       ~ (p=1.000 n=8) ¹
+MinMaxContention/g=50/order=ascending-8                0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=8) ¹   0.000 ± 0%       ~ (p=1.000 n=8) ¹
+MinMaxContention/g=50/order=descending-8               0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=8) ¹   0.000 ± 0%       ~ (p=1.000 n=8) ¹
+MinMaxContention/g=100/order=steady-8                  0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=8) ¹   0.000 ± 0%       ~ (p=1.000 n=8) ¹
+MinMaxContention/g=100/order=ascending-8               0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=8) ¹   0.000 ± 0%       ~ (p=1.000 n=8) ¹
+MinMaxContention/g=100/order=descending-8              0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=8) ¹   0.000 ± 0%       ~ (p=1.000 n=8) ¹
+MinMaxContention/g=50/order=steady-8                   0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=8) ¹   0.000 ± 0%       ~ (p=1.000 n=8) ¹
+MinMaxContention/g=50/order=ascending-8                0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=8) ¹   0.000 ± 0%       ~ (p=1.000 n=8) ¹
+MinMaxContention/g=50/order=descending-8               0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=8) ¹   0.000 ± 0%       ~ (p=1.000 n=8) ¹
+MinMaxContention/g=100/order=steady-8                  0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=8) ¹   0.000 ± 0%       ~ (p=1.000 n=8) ¹
+MinMaxContention/g=100/order=ascending-8               0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=8) ¹   0.000 ± 0%       ~ (p=1.000 n=8) ¹
+MinMaxContention/g=100/order=descending-8              0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=8) ¹   0.000 ± 0%       ~ (p=1.000 n=8) ¹
