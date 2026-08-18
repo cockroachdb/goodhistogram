@@ -76,9 +76,7 @@ func TestResolutionPresets(t *testing.T) {
 			require.Equal(t, tt.wantSchema, h.Schema())
 			require.Equal(t, tt.wantBucket, h.cfg.numBuckets)
 
-			// The configured ErrorBound must be the worst-case error the
-			// chosen schema actually delivers (γ-1) — the whole point of the
-			// preset is that the bound is honored, not understated.
+			// ErrorBound must equal the schema's worst-case error (γ-1).
 			require.InEpsilon(t, schemaRelativeError(tt.wantSchema), tt.params.ErrorBound, 1e-12)
 		})
 	}
