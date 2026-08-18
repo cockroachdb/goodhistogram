@@ -351,7 +351,7 @@ func TestWindowedSnapshotConcurrentTickNoUnderflow(t *testing.T) {
 
 func TestWindowedSchema(t *testing.T) {
 	w := NewWindowed(Params{Lo: 1, Hi: 1e6, ErrorBound: 0.05}, time.Hour)
-	require.Equal(t, int32(3), w.Schema())
+	require.Equal(t, int32(4), w.Schema())
 }
 
 func TestNewWindowedPanicsOnZeroWindow(t *testing.T) {
