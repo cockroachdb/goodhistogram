@@ -494,6 +494,45 @@ func TestQuantileEdgeCases(t *testing.T) {
 	})
 }
 
+func TestQuantileTopBucketDensity(t *testing.T) {
+	// Regression test for the rightmost-bucket density bias fixed in
+	// f4b1ed8: the right-edge density of the last bucket must be set to the
+	// last bucket's own average density, not left at zero. A zero right-edge
+	// density models the top bucket as a downslope (high density on the left,
+	// falling to nothing on the right), which pulls high interior quantiles
+	// toward lo.
+	//
+	// We put all mass in the single last in-range bucket. Its left boundary
+	// density is averaged with the empty neighbor (avg/2) and its right
+	// boundary density is the bucket's own average (avg). The density therefore
+	// rises across the bucket, so the median lands at or past the bucket
+	// midpoint. Under the bug the right density is 0, the density falls to zero,
+	// and the median is pulled below the midpoint.
+	h := New(Params{Lo: 1, Hi: 1e6, ErrorBound: 0.05})
+	cfg := h.cfg
+	n := cfg.numBuckets
+
+	snap := Snapshot{
+		cfg:        cfg,
+		Counts:     make([]uint64, n),
+		TotalCount: 1000,
+	}
+	snap.Counts[n-1] = 1000
+
+	mid := (cfg.boundaries[n-1] + cfg.boundaries[n]) / 2
+
+	med := snap.ValueAtQuantile(0.5)
+	require.GreaterOrEqualf(t, med, mid,
+		"median %.2f should be >= top-bucket midpoint %.2f; a lower value means "+
+			"the last bucket's right-edge density is 0 (rightmost-bucket density bug)", med, mid)
+
+	// The batch path computes boundary densities independently; verify it got
+	// the same fix and agrees with the single-value path.
+	batch := snap.ValuesAtQuantiles([]float64{0.5})
+	require.InDelta(t, med, batch[0], 1e-9,
+		"batch path disagrees with single path at the top bucket")
+}
+
 func TestValuesAtQuantiles(t *testing.T) {
 	t.Run("matches individual calls", func(t *testing.T) {
 		h := New(Params{Lo: 1, Hi: 1e6, ErrorBound: 0.05})
