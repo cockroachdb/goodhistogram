@@ -1,0 +1,16 @@
+[package]
+name = "goodhistogram"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+license = "Apache-2.0"
+description = "Lock-free, Prometheus-aligned exponential histogram. Rust implementation of github.com/cockroachdb/goodhistogram."
+repository = "https://github.com/cockroachdb/goodhistogram"
+readme = "README.md"
+keywords = ["histogram", "metrics", "prometheus", "quantile", "latency"]
+categories = ["data-structures"]
+
+# The library has no dependencies -- recording is a couple of atomics and std
+# bit ops, and the datatest harness (tests/datatest.rs) parses its fixtures by
+# hand, so the whole crate builds and tests offline.
+[dependencies]

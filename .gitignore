@@ -3,3 +3,8 @@
 
 # Output of the go coverage tool
 *.out
+
+# Rust crate build artifacts. Cargo.lock is intentionally not committed since
+# goodhistogram is a library.
+/rust/target/
+/rust/Cargo.lock
