@@ -19,6 +19,12 @@
 
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 
+#[cfg(feature = "prometheus")]
+pub mod prometheus;
+
+#[cfg(feature = "prometheus-client")]
+pub mod prometheus_client;
+
 const MAX_SCHEMA: i32 = 8;
 
 /// Number of top mantissa bits used for the bucket lookup table.

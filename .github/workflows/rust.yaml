@@ -30,8 +30,14 @@ jobs:
     - name: Clippy
       run: cargo clippy --all-targets -- -D warnings
 
+    - name: Clippy (all features)
+      run: cargo clippy --all-targets --all-features -- -D warnings
+
     - name: Build
       run: cargo build --verbose
 
-    - name: Test
+    - name: Test (default, zero-dependency)
       run: cargo test --verbose
+
+    - name: Test (all features)
+      run: cargo test --all-features --verbose
