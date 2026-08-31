@@ -24,8 +24,10 @@ import (
 // hand-authored input section (the histogram params and the values to record)
 // and a generated golden section (the OpenMetrics exposition plus a set of
 // quantiles). The Go implementation is the source of truth: `-rewrite`
-// regenerates the golden section from live Go, and a normal run re-derives it
-// and fails if the committed file is stale.
+// regenerates the golden section from live Go. A normal run replays the values
+// and checks the live output matches the committed golden — counts and sum
+// exactly, boundaries and quantiles within a small tolerance so platform (libm)
+// differences in the float math don't cause spurious failures.
 //
 // The Rust crate (rust/tests/datatest.rs) reads the SAME files, replays the
 // values against its own implementation, and checks it reproduces the golden.
@@ -70,30 +72,159 @@ func TestDatatest(t *testing.T) {
 	}
 }
 
+// Tolerances mirror the Rust suite (rust/tests/datatest.rs). Bucket boundaries
+// and quantiles come from powf/sqrt, whose last bit differs across platforms
+// (e.g. arm64 vs the amd64 CI runners) and math libraries, so they are compared
+// within a small relative tolerance. Counts and sum are exact.
+const (
+	boundaryRelTol = 1e-9
+	quantileRelTol = 1e-6
+)
+
 func runDatatest(t *testing.T, path string) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	in := parseDatatestInput(t, string(raw))
-	body := generateGolden(in)
 
 	if *rewriteDatatest {
 		header := strings.TrimRight(splitHeader(string(raw)), "\n")
-		if err := os.WriteFile(path, []byte(header+"\n\n"+body), 0o644); err != nil {
+		if err := os.WriteFile(path, []byte(header+"\n\n"+generateGolden(in)), 0o644); err != nil {
 			t.Fatal(err)
 		}
 		return
 	}
 
-	got := strings.TrimRight(body, "\n")
-	want := strings.TrimRight(splitBody(string(raw)), "\n")
-	if got != want {
-		t.Fatalf("golden section is out of date with the Go implementation.\n"+
-			"run `go test ./go/ -run TestDatatest -rewrite` and review the diff "+
-			"(the Rust suite must then be re-run against the new golden).\n\n"+
-			"--- got ---\n%s\n\n--- want ---\n%s", got, want)
+	// Check mode: replay the values and compare the live output to the committed
+	// golden. This mirrors what the Rust suite does, so both implementations are
+	// checked against one shared, portable contract.
+	body := splitBody(string(raw))
+	if strings.TrimSpace(body) == "" {
+		t.Fatalf("%s has no generated golden; run "+
+			"`go test ./go/ -run TestDatatest -rewrite`", path)
 	}
+	exp := parseGolden(t, body)
+
+	h := New(Params{Lo: in.lo, Hi: in.hi, ErrorBound: in.errorBound})
+	for _, v := range in.values {
+		h.Record(v)
+	}
+	snap := h.Snapshot()
+	compareToGolden(t, &snap, exp)
+}
+
+// goldenBucket is a parsed OpenMetrics bucket: an upper bound and cumulative
+// count. le is +Inf for the terminal bucket.
+type goldenBucket struct {
+	le  float64
+	cum uint64
+}
+
+type goldenQuantile struct {
+	q, v float64
+}
+
+type golden struct {
+	buckets   []goldenBucket
+	sum       int64
+	count     uint64
+	quantiles []goldenQuantile
+}
+
+// parseGolden reads the generated golden section back into structured values.
+func parseGolden(t *testing.T, body string) golden {
+	var g golden
+	for _, line := range strings.Split(body, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		fields := strings.Fields(line)
+		key := fields[0]
+		switch {
+		case key == "quantile":
+			g.quantiles = append(g.quantiles, goldenQuantile{
+				q: mustFloat(t, fields[1]),
+				v: mustFloat(t, fields[2]),
+			})
+		case strings.Contains(key, "_bucket{le="):
+			g.buckets = append(g.buckets, goldenBucket{
+				le:  parseLe(t, key),
+				cum: mustUint(t, fields[1]),
+			})
+		case strings.HasSuffix(key, "_count"):
+			g.count = mustUint(t, fields[1])
+		case strings.HasSuffix(key, "_sum"):
+			g.sum = mustInt(t, fields[1])
+		default:
+			t.Fatalf("unexpected golden line %q", line)
+		}
+	}
+	return g
+}
+
+// parseLe extracts the le value from a token like
+// `goodhistogram_bucket{le="1024"}` or `..._bucket{le="+Inf"}`.
+func parseLe(t *testing.T, token string) float64 {
+	start := strings.Index(token, "le=\"")
+	if start < 0 {
+		t.Fatalf("malformed bucket token %q", token)
+	}
+	rest := token[start+4:]
+	end := strings.Index(rest, "\"}")
+	if end < 0 {
+		t.Fatalf("malformed bucket token %q", token)
+	}
+	s := rest[:end]
+	if s == "+Inf" {
+		return math.Inf(1)
+	}
+	return mustFloat(t, s)
+}
+
+// compareToGolden asserts the live snapshot reproduces the golden: bucket
+// boundaries and quantiles within tolerance, cumulative counts, sum, and count
+// exact.
+func compareToGolden(t *testing.T, snap *Snapshot, exp golden) {
+	buckets := snap.ToPrometheusHistogram().GetBucket()
+	if len(buckets) != len(exp.buckets) {
+		t.Fatalf("bucket count: got %d, golden %d", len(buckets), len(exp.buckets))
+	}
+	for i, b := range buckets {
+		if !closeEnough(b.GetUpperBound(), exp.buckets[i].le, boundaryRelTol) {
+			t.Errorf("bucket[%d] le: got %g, golden %g", i, b.GetUpperBound(), exp.buckets[i].le)
+		}
+		if b.GetCumulativeCount() != exp.buckets[i].cum {
+			t.Errorf("bucket[%d] cumulative count: got %d, golden %d",
+				i, b.GetCumulativeCount(), exp.buckets[i].cum)
+		}
+	}
+	if snap.TotalSum != exp.sum {
+		t.Errorf("sum: got %d, golden %d", snap.TotalSum, exp.sum)
+	}
+	if snap.TotalCount != exp.count {
+		t.Errorf("count: got %d, golden %d", snap.TotalCount, exp.count)
+	}
+	for _, q := range exp.quantiles {
+		if got := snap.ValueAtQuantile(q.q); !closeEnough(got, q.v, quantileRelTol) {
+			t.Errorf("quantile q=%g: got %g, golden %g", q.q, got, q.v)
+		}
+	}
+}
+
+// closeEnough reports whether a and b are equal within a relative tolerance,
+// with an absolute floor of 1 so values near zero don't demand impossible
+// precision. Infinities must match exactly.
+func closeEnough(a, b, rel float64) bool {
+	if math.IsInf(a, 0) || math.IsInf(b, 0) {
+		return a == b
+	}
+	if a == b {
+		return true
+	}
+	scale := math.Max(math.Max(math.Abs(a), math.Abs(b)), 1.0)
+	return math.Abs(a-b) <= rel*scale
 }
 
 // splitHeader returns the text before the generated marker (the description and
@@ -188,6 +319,22 @@ func mustFloat(t *testing.T, s string) float64 {
 		t.Fatalf("bad float %q: %v", s, err)
 	}
 	return f
+}
+
+func mustUint(t *testing.T, s string) uint64 {
+	v, err := strconv.ParseUint(s, 10, 64)
+	if err != nil {
+		t.Fatalf("bad uint %q: %v", s, err)
+	}
+	return v
+}
+
+func mustInt(t *testing.T, s string) int64 {
+	v, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		t.Fatalf("bad int %q: %v", s, err)
+	}
+	return v
 }
 
 func parseInts(t *testing.T, s string) []int64 {

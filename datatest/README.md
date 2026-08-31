@@ -66,14 +66,17 @@ captured here.
 **Go owns the golden.** Behavior changes land in Go first; you then regenerate
 and the Rust side must conform.
 
-- **Go** (`go/datatest_test.go`) regenerates the golden section from the live Go
-  implementation and, on a normal run, fails if the committed file is stale.
+- **Go** (`go/datatest_test.go`) replays the recorded values against the live Go
+  implementation and checks it reproduces the golden. `-rewrite` regenerates the
+  golden section (Go only).
 - **Rust** (`rust/tests/datatest.rs`) replays the recorded values against the
   Rust crate and checks it reproduces the golden. It never regenerates.
 
-Comparison is exact for bucket counts, sum, and count. Bucket boundaries and
-quantiles are compared within a small relative tolerance (1e-9 and 1e-6), which
-absorbs last-bit differences between Go's and Rust's math libraries.
+Both suites compare the same way: exact for bucket counts, sum, and count;
+bucket boundaries and quantiles within a small relative tolerance (1e-9 and
+1e-6). The tolerance absorbs last-bit differences between math libraries — both
+across languages (Go vs Rust) and across platforms (e.g. the arm64 dev machines
+vs the amd64 CI runners), which is why the golden is not compared byte for byte.
 
 So: change Go behavior → the Go suite forces a `-rewrite`; forget to update Rust
 (or introduce a Rust bug) → the Rust suite fails against the committed golden.
