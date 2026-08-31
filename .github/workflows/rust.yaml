@@ -1,0 +1,43 @@
+name: Rust
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+# The Rust crate lives in rust/. Its conformance test replays
+# testdata/conformance.txt (generated from the Go implementation) so this job
+# fails if the Rust port drifts from Go.
+defaults:
+  run:
+    working-directory: rust
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        components: rustfmt, clippy
+
+    - name: Format
+      run: cargo fmt --check
+
+    - name: Clippy
+      run: cargo clippy --all-targets -- -D warnings
+
+    - name: Clippy (all features)
+      run: cargo clippy --all-targets --all-features -- -D warnings
+
+    - name: Build
+      run: cargo build --verbose
+
+    - name: Test (default, zero-dependency)
+      run: cargo test --verbose
+
+    - name: Test (all features)
+      run: cargo test --all-features --verbose
