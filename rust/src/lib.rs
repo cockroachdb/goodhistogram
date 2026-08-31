@@ -19,6 +19,9 @@
 
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 
+pub mod vec;
+pub use vec::HistogramVec;
+
 #[cfg(feature = "prometheus")]
 pub mod prometheus;
 
@@ -52,12 +55,16 @@ pub struct Params {
 /// literal against drift.
 pub const STANDARD_ERROR_BOUND: f64 = 0.18920711500272103;
 
+/// Default relative error bound applied when `Params::error_bound` is left at
+/// zero: 10% (schema 3). Matches the Go implementation's `withDefaults`.
+pub const DEFAULT_ERROR_BOUND: f64 = 0.10;
+
 impl Default for Params {
     fn default() -> Self {
         Params {
             lo: 1.0,
             hi: i64::MAX as f64,
-            error_bound: STANDARD_ERROR_BOUND,
+            error_bound: DEFAULT_ERROR_BOUND,
         }
     }
 }
@@ -69,8 +76,81 @@ pub const LATENCY_PARAMS: Params = Params {
     error_bound: STANDARD_ERROR_BOUND,
 };
 
+// Resolution presets covering the full [1, i64::MAX] range, differing only in
+// accuracy and memory. Error bounds are the exact worst-case schema errors, so
+// each pins a specific schema. These mirror the Go CoarseParams/StandardParams/
+// FineParams.
+
+/// Schema 1, ~41.4% error, 126 buckets, ~1 KB/histogram.
+pub const COARSE_PARAMS: Params = Params {
+    lo: 1.0,
+    hi: i64::MAX as f64,
+    error_bound: 0.41421356237309515, // schema_relative_error(1)
+};
+
+/// Schema 2, ~18.9% error, 252 buckets, ~2 KB/histogram.
+pub const STANDARD_PARAMS: Params = Params {
+    lo: 1.0,
+    hi: i64::MAX as f64,
+    error_bound: STANDARD_ERROR_BOUND, // schema_relative_error(2)
+};
+
+/// Schema 3, ~9.05% error, 504 buckets, ~4 KB/histogram.
+pub const FINE_PARAMS: Params = Params {
+    lo: 1.0,
+    hi: i64::MAX as f64,
+    error_bound: 0.09050773266525769, // schema_relative_error(3)
+};
+
+// Common presets modeled after CockroachDB's histogram bucket tiers. Time-based
+// presets expect values in nanoseconds. These mirror the Go presets, which
+// leave ErrorBound unset and take the default (10%, schema 3).
+
+/// High-resolution latency: 1µs to 5m.
+pub const HIRES_LATENCY_PARAMS: Params = Params {
+    lo: 1_000.0,
+    hi: 300e9,
+    error_bound: DEFAULT_ERROR_BOUND,
+};
+
+/// Fast I/O operations: 10µs to 10s.
+pub const IO_LATENCY_PARAMS: Params = Params {
+    lo: 10_000.0,
+    hi: 10e9,
+    error_bound: DEFAULT_ERROR_BOUND,
+};
+
+/// Request/response latencies: 1ms to 30s.
+pub const RESPONSE_TIME_PARAMS: Params = Params {
+    lo: 1e6,
+    hi: 30e9,
+    error_bound: DEFAULT_ERROR_BOUND,
+};
+
+/// Long-running operations: 500ms to 1h.
+pub const LONG_RUNNING_PARAMS: Params = Params {
+    lo: 500e6,
+    hi: 3.6e12,
+    error_bound: DEFAULT_ERROR_BOUND,
+};
+
+/// Data payload sizes: 1KB to 16MB (bytes).
+pub const DATA_SIZE_PARAMS: Params = Params {
+    lo: 1024.0,
+    hi: (16 * 1024 * 1024) as f64,
+    error_bound: DEFAULT_ERROR_BOUND,
+};
+
+/// Memory tracking: 1B to 64MB (bytes).
+pub const MEMORY_USAGE_PARAMS: Params = Params {
+    lo: 1.0,
+    hi: (64 * 1024 * 1024) as f64,
+    error_bound: DEFAULT_ERROR_BOUND,
+};
+
 /// Immutable configuration computed from Params.
 struct Config {
+    schema: i32,
     min_key: i32,
     num_buckets: usize,
     buckets_per_group: usize,
@@ -179,6 +259,7 @@ impl Config {
         }
 
         Config {
+            schema,
             min_key,
             num_buckets,
             buckets_per_group,
@@ -205,7 +286,7 @@ impl Histogram {
             lo: if p.lo == 0.0 { 1.0 } else { p.lo },
             hi: if p.hi == 0.0 { i64::MAX as f64 } else { p.hi },
             error_bound: if p.error_bound == 0.0 {
-                STANDARD_ERROR_BOUND
+                DEFAULT_ERROR_BOUND
             } else {
                 p.error_bound
             },
@@ -275,6 +356,7 @@ impl Histogram {
 
         Snapshot {
             boundaries: &self.cfg.boundaries,
+            schema: self.cfg.schema,
             counts,
             zero_count,
             underflow,
@@ -283,11 +365,28 @@ impl Histogram {
             total_sum: self.sum.load(Ordering::Relaxed),
         }
     }
+
+    /// Returns the Prometheus native histogram schema (0–8) selected for this
+    /// histogram's error bound.
+    pub fn schema(&self) -> i32 {
+        self.cfg.schema
+    }
+
+    /// Writes estimated values at the given quantiles into `dst` (cleared
+    /// first), reading the live atomic counters. Equivalent in result to
+    /// `self.snapshot().values_at_quantiles(qs)`; provided to match Go's
+    /// `ValuesAtQuantilesInto` for reusing an output buffer across reads.
+    pub fn values_at_quantiles_into(&self, dst: &mut Vec<f64>, qs: &[f64]) {
+        let snap = self.snapshot();
+        dst.clear();
+        dst.extend(qs.iter().map(|&q| snap.value_at_quantile(q)));
+    }
 }
 
 /// Point-in-time snapshot of a Histogram, suitable for quantile queries.
 pub struct Snapshot<'a> {
     boundaries: &'a [f64],
+    schema: i32,
     pub counts: Vec<u64>,
     pub zero_count: u64,
     pub underflow: u64,
@@ -296,7 +395,7 @@ pub struct Snapshot<'a> {
     pub total_sum: i64,
 }
 
-impl Snapshot<'_> {
+impl<'a> Snapshot<'a> {
     /// Returns the bucket boundaries. `counts[i]` holds the number of values
     /// that fell in `(boundaries[i], boundaries[i + 1]]`, so this slice is one
     /// longer than `counts`.
@@ -399,6 +498,62 @@ impl Snapshot<'_> {
     /// Returns total count and sum.
     pub fn total(&self) -> (i64, f64) {
         (self.total_count as i64, self.total_sum as f64)
+    }
+
+    /// Returns the Prometheus native histogram schema (0–8).
+    pub fn schema(&self) -> i32 {
+        self.schema
+    }
+
+    /// Returns estimated values at each quantile in `qs`. Equivalent to calling
+    /// [`Snapshot::value_at_quantile`] per element.
+    pub fn values_at_quantiles(&self, qs: &[f64]) -> Vec<f64> {
+        qs.iter().map(|&q| self.value_at_quantile(q)).collect()
+    }
+
+    /// Returns a new snapshot whose counts are the element-wise sum of `self`
+    /// and `other`. Both must share the same config (same schema and bucket
+    /// boundaries) — used to combine window snapshots.
+    pub fn merge(&self, other: &Snapshot<'a>) -> Snapshot<'a> {
+        let counts = self
+            .counts
+            .iter()
+            .zip(&other.counts)
+            .map(|(a, b)| a + b)
+            .collect();
+        Snapshot {
+            boundaries: self.boundaries,
+            schema: self.schema,
+            counts,
+            zero_count: self.zero_count + other.zero_count,
+            underflow: self.underflow + other.underflow,
+            overflow: self.overflow + other.overflow,
+            total_count: self.total_count + other.total_count,
+            total_sum: self.total_sum + other.total_sum,
+        }
+    }
+
+    /// Returns a new snapshot whose counts are the element-wise difference of
+    /// `self` minus `other` (same config). Used to compute a windowed view by
+    /// subtracting a baseline from a cumulative snapshot. Arithmetic wraps, as
+    /// in the Go implementation; callers subtract a baseline that is <= self.
+    pub fn sub(&self, other: &Snapshot<'a>) -> Snapshot<'a> {
+        let counts = self
+            .counts
+            .iter()
+            .zip(&other.counts)
+            .map(|(a, b)| a.wrapping_sub(*b))
+            .collect();
+        Snapshot {
+            boundaries: self.boundaries,
+            schema: self.schema,
+            counts,
+            zero_count: self.zero_count.wrapping_sub(other.zero_count),
+            underflow: self.underflow.wrapping_sub(other.underflow),
+            overflow: self.overflow.wrapping_sub(other.overflow),
+            total_count: self.total_count.wrapping_sub(other.total_count),
+            total_sum: self.total_sum.wrapping_sub(other.total_sum),
+        }
     }
 
     /// Returns the classic (non-native) Prometheus histogram buckets:

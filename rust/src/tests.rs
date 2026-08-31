@@ -315,6 +315,135 @@ fn test_record_and_quantile() {
 }
 
 #[test]
+fn test_schema_accessors() {
+    for (eb, want) in [(0.35, 2), (0.10, 3), (0.05, 4)] {
+        let h = Histogram::new(Params {
+            lo: 1.0,
+            hi: 1e9,
+            error_bound: eb,
+        });
+        assert_eq!(h.schema(), want, "error_bound {eb}");
+        assert_eq!(h.snapshot().schema(), want);
+    }
+}
+
+#[test]
+fn test_default_error_bound_is_schema_3() {
+    // Matches Go: an unset error bound defaults to 10% (schema 3).
+    assert_eq!(DEFAULT_ERROR_BOUND, 0.10);
+    let h = Histogram::new(Params {
+        lo: 1.0,
+        hi: 1e9,
+        error_bound: 0.0,
+    });
+    assert_eq!(h.schema(), 3);
+    assert_eq!(Params::default().error_bound, 0.10);
+}
+
+#[test]
+fn test_values_at_quantiles_matches_individual() {
+    let h = Histogram::new(Params {
+        lo: 1.0,
+        hi: 1000.0,
+        error_bound: 0.05,
+    });
+    for i in 1..=1000i64 {
+        h.record(i);
+    }
+    let snap = h.snapshot();
+    let qs = [0.0, 0.25, 0.5, 0.9, 0.99, 1.0];
+    let batch = snap.values_at_quantiles(&qs);
+    assert_eq!(batch.len(), qs.len());
+    for (i, &q) in qs.iter().enumerate() {
+        assert_eq!(batch[i], snap.value_at_quantile(q), "q={q}");
+    }
+}
+
+#[test]
+fn test_values_at_quantiles_into_matches_batch() {
+    let h = Histogram::new(Params {
+        lo: 1.0,
+        hi: 1000.0,
+        error_bound: 0.05,
+    });
+    for i in 1..=1000i64 {
+        h.record(i);
+    }
+    let qs = [0.0, 0.5, 0.99, 1.0];
+    let mut dst = Vec::new();
+    h.values_at_quantiles_into(&mut dst, &qs);
+    assert_eq!(dst, h.snapshot().values_at_quantiles(&qs));
+}
+
+#[test]
+fn test_merge() {
+    let p = Params {
+        lo: 1.0,
+        hi: 1e6,
+        error_bound: 0.1,
+    };
+    let a = Histogram::new(p);
+    let b = Histogram::new(p);
+    a.record(100);
+    a.record(200);
+    b.record(200);
+    b.record(0); // zero
+    b.record(5_000_000); // overflow
+
+    let (sa, sb) = (a.snapshot(), b.snapshot());
+    let m = sa.merge(&sb);
+    assert_eq!(m.total_count, sa.total_count + sb.total_count);
+    assert_eq!(m.total_sum, sa.total_sum + sb.total_sum);
+    assert_eq!(m.zero_count, sb.zero_count);
+    assert_eq!(m.overflow, sb.overflow);
+    for i in 0..m.counts.len() {
+        assert_eq!(m.counts[i], sa.counts[i] + sb.counts[i]);
+    }
+}
+
+#[test]
+fn test_sub() {
+    let p = Params {
+        lo: 1.0,
+        hi: 1e6,
+        error_bound: 0.1,
+    };
+    let cumulative = Histogram::new(p);
+    cumulative.record(100);
+    let baseline = cumulative.snapshot(); // 1 observation
+    cumulative.record(200);
+    cumulative.record(300);
+    let cur = cumulative.snapshot(); // 3 observations
+
+    // Windowed view: current minus baseline = the 2 newer observations.
+    let window = cur.sub(&baseline);
+    assert_eq!(window.total_count, 2);
+    assert_eq!(window.total_sum, 500);
+    // merge is the inverse of sub.
+    let restored = window.merge(&baseline);
+    assert_eq!(restored.counts, cur.counts);
+    assert_eq!(restored.total_count, cur.total_count);
+}
+
+#[test]
+fn test_presets_schema() {
+    assert_eq!(Histogram::new(COARSE_PARAMS).schema(), 1);
+    assert_eq!(Histogram::new(STANDARD_PARAMS).schema(), 2);
+    assert_eq!(Histogram::new(FINE_PARAMS).schema(), 3);
+    // The time/size presets leave the default error bound (schema 3).
+    for p in [
+        HIRES_LATENCY_PARAMS,
+        IO_LATENCY_PARAMS,
+        RESPONSE_TIME_PARAMS,
+        LONG_RUNNING_PARAMS,
+        DATA_SIZE_PARAMS,
+        MEMORY_USAGE_PARAMS,
+    ] {
+        assert_eq!(Histogram::new(p).schema(), 3);
+    }
+}
+
+#[test]
 fn test_conventional_buckets() {
     let h = Histogram::new(Params {
         lo: 1000.0,

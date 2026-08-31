@@ -21,6 +21,10 @@
 //! Unlike a count/sum-only wrapper, this exports the full cumulative bucket set,
 //! so `histogram_quantile()` works against the scraped metric.
 //!
+//! Only the classic (`le`-bucket) projection is exported: the tikv `prometheus`
+//! 0.13 proto has no native-histogram fields (schema/spans/deltas), so there is
+//! nothing to populate for native encoding.
+//!
 //! Enable with the `prometheus` cargo feature.
 
 use crate::{Histogram, Params, Snapshot};
