@@ -90,6 +90,7 @@ goodhistogram_bucket{le="1000"} 0
 goodhistogram_bucket{le="+Inf"} 0
 goodhistogram_sum 0
 goodhistogram_count 0
+schema 3
 quantile 0 0
 quantile 0.25 0
 quantile 0.5 0

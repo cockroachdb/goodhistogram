@@ -93,6 +93,7 @@ goodhistogram_bucket{le="1e+06"} 6
 goodhistogram_bucket{le="+Inf"} 6
 goodhistogram_sum 1557
 goodhistogram_count 6
+schema 3
 quantile 0 1000
 quantile 0.25 1000
 quantile 0.5 1000

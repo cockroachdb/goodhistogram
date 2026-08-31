@@ -38,6 +38,7 @@ struct Scenario {
     buckets: Vec<(f64, u64)>, // (le, cumulative count), ending in (+Inf, total)
     sum: i64,
     count: u64,
+    schema: i32,
     quantiles: Vec<(f64, f64)>,
 }
 
@@ -91,6 +92,7 @@ fn check_scenario(sc: &Scenario, name: &str) {
 
     assert_eq!(snap.total_sum, sc.sum, "[{name}] sum");
     assert_eq!(snap.total_count, sc.count, "[{name}] count");
+    assert_eq!(snap.schema(), sc.schema, "[{name}] schema");
 
     for &(q, want) in &sc.quantiles {
         let got = snap.value_at_quantile(q);
@@ -128,6 +130,7 @@ fn parse_scenario(text: &str, name: &str) -> Scenario {
             "hi" => sc.hi = f(&mut it, name),
             "error_bound" => sc.error_bound = f(&mut it, name),
             "values" => sc.values = it.map(|t| parse::<i64>(t, name)).collect(),
+            "schema" => sc.schema = parse(it.next().expect("schema value"), name),
             "quantile" => {
                 let q = f(&mut it, name);
                 let v = f(&mut it, name);

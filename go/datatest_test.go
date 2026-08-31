@@ -129,6 +129,7 @@ type golden struct {
 	buckets   []goldenBucket
 	sum       int64
 	count     uint64
+	schema    int32
 	quantiles []goldenQuantile
 }
 
@@ -153,6 +154,8 @@ func parseGolden(t *testing.T, body string) golden {
 				le:  parseLe(t, key),
 				cum: mustUint(t, fields[1]),
 			})
+		case key == "schema":
+			g.schema = int32(mustInt(t, fields[1]))
 		case strings.HasSuffix(key, "_count"):
 			g.count = mustUint(t, fields[1])
 		case strings.HasSuffix(key, "_sum"):
@@ -205,6 +208,9 @@ func compareToGolden(t *testing.T, snap *Snapshot, exp golden) {
 	}
 	if snap.TotalCount != exp.count {
 		t.Errorf("count: got %d, golden %d", snap.TotalCount, exp.count)
+	}
+	if snap.Schema() != exp.schema {
+		t.Errorf("schema: got %d, golden %d", snap.Schema(), exp.schema)
 	}
 	for _, q := range exp.quantiles {
 		if got := snap.ValueAtQuantile(q.q); !closeEnough(got, q.v, quantileRelTol) {
@@ -270,6 +276,7 @@ func generateGolden(in datatestInput) string {
 	}
 	fmt.Fprintf(&b, "%s_sum %d\n", metricName, snap.TotalSum)
 	fmt.Fprintf(&b, "%s_count %d\n", metricName, snap.TotalCount)
+	fmt.Fprintf(&b, "schema %d\n", snap.Schema())
 	for _, q := range datatestQuantiles {
 		fmt.Fprintf(&b, "quantile %s %s\n",
 			strconv.FormatFloat(q, 'g', -1, 64),

@@ -91,6 +91,7 @@ goodhistogram_bucket{le="1000"} 5
 goodhistogram_bucket{le="+Inf"} 5
 goodhistogram_sum 500
 goodhistogram_count 5
+schema 3
 quantile 0 98.70149282610822
 quantile 0.25 100.93480490770003
 quantile 0.5 103.16811698929185
