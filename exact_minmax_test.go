@@ -45,7 +45,7 @@ func TestExactMinMaxEmpty(t *testing.T) {
 	require.Equal(t, int64(0), s.Max)
 
 	snap := h.Snapshot()
-	require.Equal(t, uint64(0), snap.TotalCount)
+	require.Equal(t, uint64(0), snap.Summary().Count)
 	require.Equal(t, 0.0, snap.ValueAtQuantile(0))
 	require.Equal(t, 0.0, snap.ValueAtQuantile(0.5))
 	require.Equal(t, 0.0, snap.ValueAtQuantile(1.0))
@@ -82,7 +82,7 @@ func TestExactMinMaxQuantileEndpoints(t *testing.T) {
 
 	// Interior quantiles must delegate unchanged to the base estimate.
 	for _, q := range []float64{0.25, 0.5, 0.75, 0.99} {
-		require.Equalf(t, snap.Snapshot.ValueAtQuantile(q), snap.ValueAtQuantile(q),
+		require.Equalf(t, snap.snapshot.ValueAtQuantile(q), snap.ValueAtQuantile(q),
 			"interior q=%.2f must match base estimate", q)
 	}
 }
@@ -118,7 +118,7 @@ func TestExactMinMaxMerge(t *testing.T) {
 	b := mk(50, 90000)
 
 	m := a.Merge(&b)
-	require.Equal(t, uint64(5), m.TotalCount)
+	require.Equal(t, uint64(5), m.Summary().Count)
 	require.Equal(t, int64(10), m.Min, "min-of-mins")
 	require.Equal(t, int64(90000), m.Max, "max-of-maxes")
 
@@ -127,7 +127,7 @@ func TestExactMinMaxMerge(t *testing.T) {
 	m2 := a.Merge(&empty)
 	require.Equal(t, int64(10), m2.Min)
 	require.Equal(t, int64(3000), m2.Max)
-	require.Equal(t, a.TotalCount, m2.TotalCount)
+	require.Equal(t, a.Summary().Count, m2.Summary().Count)
 
 	// Empty on the left as well.
 	m3 := empty.Merge(&a)
@@ -185,24 +185,35 @@ func TestExactMinMaxConcurrent(t *testing.T) {
 	require.Equal(t, int64(1e9), s.Max)
 }
 
-func TestExactMinMaxEmbeddingIntact(t *testing.T) {
-	// The wrapper must not disturb any base behavior: sum/count, the base
-	// Snapshot, Mean, and the Prometheus export all still work.
+func TestExactMinMaxSnapshotMethods(t *testing.T) {
+	// The explicit snapshot API preserves summary and export behavior.
 	h := NewWithExactMinMax(Params{Lo: 1, Hi: 1000, ErrorBound: 0.05})
 	h.Record(100)
 	h.Record(200)
 	h.Record(300)
 
-	// Base snapshot via the embedded Histogram is unchanged.
-	base := h.Histogram.Snapshot()
-	require.Equal(t, uint64(3), base.TotalCount)
-	require.Equal(t, int64(600), base.TotalSum)
-
-	// ExactSnapshot promotes Snapshot methods (Mean, export) unchanged.
 	snap := h.Snapshot()
+	require.Equal(t, h.Summary(), snap.Summary())
+	require.Equal(t, h.Schema(), snap.Schema())
+	count, sum := snap.Total()
+	require.Equal(t, int64(3), count)
+	require.Equal(t, float64(600), sum)
 	require.InDelta(t, 200.0, snap.Mean(), 1e-9)
 	ph := snap.ToPrometheusHistogram()
 	require.Equal(t, uint64(3), ph.GetSampleCount())
 	require.Equal(t, float64(600), ph.GetSampleSum())
 	require.Equal(t, h.Schema(), ph.GetSchema())
+}
+
+func TestExactMinMaxAllocations(t *testing.T) {
+	p := Params{Lo: 1, Hi: 1000, ErrorBound: 0.05}
+	// AllocsPerRun warms the shared config cache before measuring. Retain
+	// each result so both constructors must allocate their returned object.
+	var base *Histogram
+	baseAllocs := testing.AllocsPerRun(100, func() { base = New(p) })
+	var exact *WithExactMinMax
+	exactAllocs := testing.AllocsPerRun(100, func() { exact = NewWithExactMinMax(p) })
+	require.NotNil(t, base)
+	require.NotNil(t, exact)
+	require.Equal(t, baseAllocs, exactAllocs, "tracking extremes must not add an allocation")
 }
