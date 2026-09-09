@@ -352,12 +352,15 @@ func (h *Histogram) Reset() {
 // New creates a new Histogram for the given range and error bound. Configs
 // are cached and shared across histograms with identical parameters.
 func New(p Params) *Histogram {
-	p = p.withDefaults()
-	cfg := getOrCreateConfig(p)
-	return &Histogram{
-		cfg:    cfg,
-		counts: make([]atomic.Uint64, cfg.numBuckets),
-	}
+	h := &Histogram{}
+	h.init(p)
+	return h
+}
+
+// init initializes a new histogram in place so wrappers can store it by value.
+func (h *Histogram) init(p Params) {
+	h.cfg = getOrCreateConfig(p.withDefaults())
+	h.counts = make([]atomic.Uint64, h.cfg.numBuckets)
 }
 
 // Record adds a value to the histogram. This is the hot path: O(1), lock-free,
