@@ -48,10 +48,11 @@ distributed systems.
 ### Install
 
 ```
-go get github.com/cockroachdb/goodhistogram/go
+go get github.com/cockroachdb/goodhistogram
 ```
 
-The Go package lives in the [`go/`](go/) directory and the Rust crate in
+The Go package is imported from the repository root, with its implementation
+in [`internal/`](internal/), and the Rust crate in
 [`rust/`](rust/); both are kept in lockstep by a shared conformance fixture
 (see [`rust/README.md`](rust/README.md)).
 

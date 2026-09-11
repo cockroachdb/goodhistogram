@@ -5,9 +5,9 @@ a lock-free, Prometheus-aligned exponential histogram.
 
 This crate lives in the same repository as the canonical Go implementation. The
 two are kept in lockstep by a shared conformance fixture generated from the Go
-code (`../testdata/conformance.txt`); `tests/conformance.rs` replays it against
+code (`../datatest/*.txt`); `tests/datatest.rs` replays it against
 this crate. When you change bucketing or quantile behavior in either language,
-regenerate the fixture (`go test ./go/ -run TestConformance -rewrite` from the repo
+regenerate the fixture (`go test ./internal/ -run TestDatatest -rewrite` from the repo
 root) and both test suites must agree.
 
 ## Usage

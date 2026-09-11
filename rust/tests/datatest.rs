@@ -10,7 +10,7 @@
 //!
 //! Each `../datatest/*.txt` file has a hand-authored input section (params +
 //! values) and a golden section generated from the canonical Go implementation
-//! (`go test ./go/ -run TestDatatest -rewrite`): the OpenMetrics exposition plus
+//! (`go test ./internal/ -run TestDatatest -rewrite`): the OpenMetrics exposition plus
 //! a set of quantiles. This test records the same values in Rust and asserts it
 //! reproduces the golden — bucket counts and sum exactly, boundaries and
 //! quantiles within a small tolerance for cross-language float (libm) drift.

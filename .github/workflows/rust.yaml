@@ -7,7 +7,7 @@ on:
     branches: [ main ]
 
 # The Rust crate lives in rust/. Its conformance test replays
-# testdata/conformance.txt (generated from the Go implementation) so this job
+# datatest/*.txt (generated from the Go implementation) so this job
 # fails if the Rust port drifts from Go.
 defaults:
   run:

@@ -8,7 +8,7 @@
 
 //! Verifies the Rust `Params` presets match the Go ones.
 //!
-//! `../datatest/presets.txt` is generated from Go (`go test ./go/ -run
+//! `../datatest/presets.golden` is generated from Go (`go test ./internal/ -run
 //! TestPresets -rewrite`). This test looks up each Rust preset const by the
 //! shared Go name and asserts identical lo/hi, error_bound (within tolerance for
 //! powf drift), schema, and bucket count.
@@ -43,7 +43,7 @@ struct Golden {
 fn presets_match_go() {
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../datatest/presets.golden");
     let text = std::fs::read_to_string(path).unwrap_or_else(|e| {
-        panic!("cannot read {path}: {e}\ngenerate with `go test ./go/ -run TestPresets -rewrite`")
+        panic!("cannot read {path}: {e}\ngenerate with `go test ./internal/ -run TestPresets -rewrite`")
     });
     let golden = parse(&text);
 

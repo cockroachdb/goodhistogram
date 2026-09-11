@@ -6,7 +6,7 @@
 //
 //     http://www.apache.org/licenses/LICENSE-2.0
 
-// Package goodhistogram provides an exponential histogram with Prometheus
+// Package internal provides an exponential histogram with Prometheus
 // native histogram schema alignment, bounded relative error, and trapezoidal
 // quantile estimation.
 //
@@ -20,7 +20,7 @@
 // Because the bucket layout is identical to a Prometheus native histogram
 // schema, export to the Prometheus sparse format requires no remapping — our
 // internal indices are Prometheus bucket indices offset by a constant.
-package goodhistogram
+package internal
 
 import (
 	"math"

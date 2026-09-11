@@ -6,7 +6,7 @@
 //
 //     http://www.apache.org/licenses/LICENSE-2.0
 
-package goodhistogram
+package internal
 
 import (
 	"github.com/prometheus/client_golang/prometheus"

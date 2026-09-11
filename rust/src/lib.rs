@@ -10,8 +10,8 @@
 //!
 //! This is the Rust implementation of `github.com/cockroachdb/goodhistogram`.
 //! It lives in the same repository as the Go implementation and is kept in
-//! lockstep with it by a shared conformance fixture (`testdata/conformance.txt`,
-//! generated from the Go code); see `tests/conformance.rs`.
+//! lockstep with it by a shared conformance fixture (`datatest/*.txt`,
+//! generated from the Go code); see `tests/datatest.rs`.
 //!
 //! Recording is O(1) and lock-free: values are mapped to bucket indices via
 //! IEEE 754 bit extraction plus a precomputed lookup table, then the
