@@ -99,6 +99,15 @@ mean := snap.Mean()
 count, sum := snap.Total()
 ```
 
+Snapshots include their bucket layout and can be serialized directly.
+
+```go
+data, err := json.Marshal(snap)
+
+var restored goodhistogram.Snapshot
+err = json.Unmarshal(data, &restored)
+```
+
 ### Register with Prometheus
 
 A histogram can be registered with a Prometheus registry via

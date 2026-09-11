@@ -408,20 +408,36 @@ func (h *Histogram) Record(v int64) {
 }
 
 // Snapshot is a point-in-time, non-atomic copy of a Histogram, suitable for
-// quantile computation and export.
+// quantile computation, export, and serialization.
 type Snapshot struct {
-	cfg        *config
-	Counts     []uint64
-	ZeroCount  uint64
-	Underflow  uint64
-	Overflow   uint64
-	TotalCount uint64
-	TotalSum   int64
+	// These fields define the bucket layout for Counts.
+	PrometheusSchema int32
+	LowestTrackable  float64
+	HighestTrackable float64
+	Counts           []uint64
+	ZeroCount        uint64
+	Underflow        uint64
+	Overflow         uint64
+	TotalCount       uint64
+	TotalSum         int64
 }
 
 // Schema returns the Prometheus native histogram schema (0–8).
 func (s *Snapshot) Schema() int32 {
-	return s.cfg.schema
+	return s.PrometheusSchema
+}
+
+// config reconstructs the derived configuration from the portable fields.
+// Configurations are cached by their construction parameters.
+func (s *Snapshot) config() *config {
+	if s.PrometheusSchema < 0 || s.PrometheusSchema > maxSchema {
+		panic("goodhistogram: invalid snapshot schema")
+	}
+	return getOrCreateConfig(Params{
+		Lo:         s.LowestTrackable,
+		Hi:         s.HighestTrackable,
+		ErrorBound: schemaRelativeError(s.PrometheusSchema),
+	})
 }
 
 // Snapshot returns a point-in-time copy of the histogram. The snapshot is
@@ -430,12 +446,14 @@ func (s *Snapshot) Schema() int32 {
 // Prometheus makes.
 func (h *Histogram) Snapshot() Snapshot {
 	s := Snapshot{
-		cfg:       h.cfg,
-		Counts:    make([]uint64, h.cfg.numBuckets),
-		ZeroCount: h.ZeroCount.Load(),
-		Underflow: h.Underflow.Load(),
-		Overflow:  h.Overflow.Load(),
-		TotalSum:  h.sum.Load(),
+		PrometheusSchema: h.cfg.schema,
+		LowestTrackable:  h.cfg.lo,
+		HighestTrackable: h.cfg.hi,
+		Counts:           make([]uint64, h.cfg.numBuckets),
+		ZeroCount:        h.ZeroCount.Load(),
+		Underflow:        h.Underflow.Load(),
+		Overflow:         h.Overflow.Load(),
+		TotalSum:         h.sum.Load(),
 	}
 	for i := range s.Counts {
 		c := h.counts[i].Load()
@@ -459,13 +477,15 @@ func (h *Histogram) Schema() int32 {
 // in the tick-based windowing pattern.
 func (s *Snapshot) Merge(other *Snapshot) Snapshot {
 	merged := Snapshot{
-		cfg:        s.cfg,
-		Counts:     make([]uint64, len(s.Counts)),
-		ZeroCount:  s.ZeroCount + other.ZeroCount,
-		Underflow:  s.Underflow + other.Underflow,
-		Overflow:   s.Overflow + other.Overflow,
-		TotalCount: s.TotalCount + other.TotalCount,
-		TotalSum:   s.TotalSum + other.TotalSum,
+		PrometheusSchema: s.PrometheusSchema,
+		LowestTrackable:  s.LowestTrackable,
+		HighestTrackable: s.HighestTrackable,
+		Counts:           make([]uint64, len(s.Counts)),
+		ZeroCount:        s.ZeroCount + other.ZeroCount,
+		Underflow:        s.Underflow + other.Underflow,
+		Overflow:         s.Overflow + other.Overflow,
+		TotalCount:       s.TotalCount + other.TotalCount,
+		TotalSum:         s.TotalSum + other.TotalSum,
 	}
 	for i := range s.Counts {
 		merged.Counts[i] = s.Counts[i] + other.Counts[i]
@@ -479,13 +499,15 @@ func (s *Snapshot) Merge(other *Snapshot) Snapshot {
 // current cumulative snapshot.
 func (s *Snapshot) Sub(other *Snapshot) Snapshot {
 	diff := Snapshot{
-		cfg:        s.cfg,
-		Counts:     make([]uint64, len(s.Counts)),
-		ZeroCount:  s.ZeroCount - other.ZeroCount,
-		Underflow:  s.Underflow - other.Underflow,
-		Overflow:   s.Overflow - other.Overflow,
-		TotalCount: s.TotalCount - other.TotalCount,
-		TotalSum:   s.TotalSum - other.TotalSum,
+		PrometheusSchema: s.PrometheusSchema,
+		LowestTrackable:  s.LowestTrackable,
+		HighestTrackable: s.HighestTrackable,
+		Counts:           make([]uint64, len(s.Counts)),
+		ZeroCount:        s.ZeroCount - other.ZeroCount,
+		Underflow:        s.Underflow - other.Underflow,
+		Overflow:         s.Overflow - other.Overflow,
+		TotalCount:       s.TotalCount - other.TotalCount,
+		TotalSum:         s.TotalSum - other.TotalSum,
 	}
 	for i := range s.Counts {
 		diff.Counts[i] = s.Counts[i] - other.Counts[i]
