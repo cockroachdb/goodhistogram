@@ -9,6 +9,7 @@
 package goodhistogram
 
 import (
+	"encoding/json"
 	"math/rand"
 	"sync"
 	"testing"
@@ -82,7 +83,7 @@ func TestExactMinMaxQuantileEndpoints(t *testing.T) {
 
 	// Interior quantiles must delegate unchanged to the base estimate.
 	for _, q := range []float64{0.25, 0.5, 0.75, 0.99} {
-		require.Equalf(t, snap.snapshot.ValueAtQuantile(q), snap.ValueAtQuantile(q),
+		require.Equalf(t, snap.Snapshot.ValueAtQuantile(q), snap.ValueAtQuantile(q),
 			"interior q=%.2f must match base estimate", q)
 	}
 }
@@ -203,6 +204,22 @@ func TestExactMinMaxSnapshotMethods(t *testing.T) {
 	require.Equal(t, uint64(3), ph.GetSampleCount())
 	require.Equal(t, float64(600), ph.GetSampleSum())
 	require.Equal(t, h.Schema(), ph.GetSchema())
+}
+
+func TestExactSnapshotSerialization(t *testing.T) {
+	h := NewWithExactMinMax(Params{Lo: 10, Hi: 100, ErrorBound: 0.5})
+	for _, value := range []int64{5, 25, 50, 200} {
+		h.Record(value)
+	}
+	original := h.Snapshot()
+
+	encoded, err := json.Marshal(original)
+	require.NoError(t, err)
+	var decoded ExactSnapshot
+	require.NoError(t, json.Unmarshal(encoded, &decoded))
+	require.Equal(t, original, decoded)
+	require.Equal(t, original.ValuesAtQuantiles([]float64{0, 0.5, 1}),
+		decoded.ValuesAtQuantiles([]float64{0, 0.5, 1}))
 }
 
 func TestExactMinMaxAllocations(t *testing.T) {

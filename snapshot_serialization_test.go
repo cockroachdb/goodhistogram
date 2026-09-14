@@ -16,6 +16,7 @@ package goodhistogram
 
 import (
 	"encoding/json"
+	"math"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -44,6 +45,64 @@ func TestSnapshotSerialization(t *testing.T) {
 		restored.Record(value)
 	}
 	require.Equal(t, h.Snapshot(), restored.Snapshot())
+}
+
+func TestSnapshotValidation(t *testing.T) {
+	h := New(Params{Lo: 10, Hi: 100, ErrorBound: 0.5})
+	h.Record(50)
+	valid := h.Snapshot()
+	require.NoError(t, valid.Validate())
+
+	testCases := []struct {
+		name   string
+		mutate func(*Snapshot)
+		err    string
+	}{
+		{"negative schema", func(s *Snapshot) { s.PrometheusSchema = -1 }, "invalid snapshot schema"},
+		{"large schema", func(s *Snapshot) { s.PrometheusSchema = maxSchema + 1 }, "invalid snapshot schema"},
+		{"NaN lower bound", func(s *Snapshot) { s.LowestTrackable = math.NaN() }, "invalid snapshot bounds"},
+		{"infinite upper bound", func(s *Snapshot) { s.HighestTrackable = math.Inf(1) }, "invalid snapshot bounds"},
+		{"zero lower bound", func(s *Snapshot) { s.LowestTrackable = 0 }, "invalid snapshot bounds"},
+		{"unordered bounds", func(s *Snapshot) { s.HighestTrackable = s.LowestTrackable }, "invalid snapshot bounds"},
+		{"short counts", func(s *Snapshot) { s.Counts = s.Counts[:len(s.Counts)-1] }, "counts, expected"},
+		{"long counts", func(s *Snapshot) { s.Counts = append(s.Counts, 0) }, "counts, expected"},
+		{"incorrect total", func(s *Snapshot) { s.TotalCount++ }, "does not match component count"},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := valid
+			s.Counts = append([]uint64(nil), valid.Counts...)
+			tc.mutate(&s)
+			require.ErrorContains(t, s.Validate(), tc.err)
+		})
+	}
+}
+
+func TestSnapshotUnmarshalRejectsInvalid(t *testing.T) {
+	h := New(Params{Lo: 10, Hi: 100, ErrorBound: 0.5})
+	h.Record(50)
+	valid := h.Snapshot()
+
+	testCases := []struct {
+		name   string
+		mutate func(*Snapshot)
+	}{
+		{"schema", func(s *Snapshot) { s.PrometheusSchema = maxSchema + 1 }},
+		{"bounds", func(s *Snapshot) { s.LowestTrackable = 0 }},
+		{"counts", func(s *Snapshot) { s.Counts = s.Counts[:len(s.Counts)-1] }},
+		{"total", func(s *Snapshot) { s.TotalCount++ }},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := valid
+			s.Counts = append([]uint64(nil), valid.Counts...)
+			tc.mutate(&s)
+			encoded, err := json.Marshal(s)
+			require.NoError(t, err)
+			var decoded Snapshot
+			require.Error(t, json.Unmarshal(encoded, &decoded))
+		})
+	}
 }
 
 // histogramFromSnapshotForTest deliberately initializes every mutable field

@@ -23,6 +23,7 @@
 package goodhistogram
 
 import (
+	"fmt"
 	"math"
 	"sort"
 	"sync"
@@ -427,17 +428,53 @@ func (s *Snapshot) Schema() int32 {
 	return s.PrometheusSchema
 }
 
-// config reconstructs the derived configuration from the portable fields.
-// Configurations are cached by their construction parameters.
-func (s *Snapshot) config() *config {
-	if s.PrometheusSchema < 0 || s.PrometheusSchema > maxSchema {
-		panic("goodhistogram: invalid snapshot schema")
+// Validate checks that the snapshot has a valid and internally consistent
+// bucket layout and observation count.
+func (s *Snapshot) Validate() error {
+	if _, err := s.layoutConfig(); err != nil {
+		return err
 	}
-	return getOrCreateConfig(Params{
+	var totalCount uint64
+	for _, count := range s.Counts {
+		totalCount += count
+	}
+	totalCount += s.ZeroCount + s.Underflow + s.Overflow
+	if totalCount != s.TotalCount {
+		return fmt.Errorf("goodhistogram: snapshot total count %d does not match component count %d",
+			s.TotalCount, totalCount)
+	}
+	return nil
+}
+
+func (s *Snapshot) layoutConfig() (*config, error) {
+	if s.PrometheusSchema < 0 || s.PrometheusSchema > maxSchema {
+		return nil, fmt.Errorf("goodhistogram: invalid snapshot schema %d", s.PrometheusSchema)
+	}
+	if math.IsNaN(s.LowestTrackable) || math.IsInf(s.LowestTrackable, 0) ||
+		math.IsNaN(s.HighestTrackable) || math.IsInf(s.HighestTrackable, 0) ||
+		s.LowestTrackable <= 0 || s.HighestTrackable <= s.LowestTrackable {
+		return nil, fmt.Errorf("goodhistogram: invalid snapshot bounds: need finite 0 < lowest trackable < highest trackable")
+	}
+	cfg := getOrCreateConfig(Params{
 		Lo:         s.LowestTrackable,
 		Hi:         s.HighestTrackable,
 		ErrorBound: schemaRelativeError(s.PrometheusSchema),
 	})
+	if len(s.Counts) != cfg.numBuckets {
+		return nil, fmt.Errorf("goodhistogram: snapshot has %d counts, expected %d",
+			len(s.Counts), cfg.numBuckets)
+	}
+	return cfg, nil
+}
+
+// config reconstructs the derived configuration from the portable fields.
+// Configurations are cached by their construction parameters.
+func (s *Snapshot) config() *config {
+	cfg, err := s.layoutConfig()
+	if err != nil {
+		panic(err)
+	}
+	return cfg
 }
 
 // Snapshot returns a point-in-time copy of the histogram. The snapshot is
