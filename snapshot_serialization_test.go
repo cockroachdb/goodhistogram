@@ -36,4 +36,34 @@ func TestSnapshotSerialization(t *testing.T) {
 	require.Equal(t, original.ValuesAtQuantiles([]float64{0, 0.5, 0.9, 1}),
 		decoded.ValuesAtQuantiles([]float64{0, 0.5, 0.9, 1}))
 	require.Equal(t, original.ToPrometheusHistogram(), decoded.ToPrometheusHistogram())
+
+	restored := histogramFromSnapshotForTest(t, decoded)
+	require.Equal(t, decoded, restored.Snapshot())
+	for _, value := range []int64{-2, 0, 9, 50, 20_001} {
+		h.Record(value)
+		restored.Record(value)
+	}
+	require.Equal(t, h.Snapshot(), restored.Snapshot())
+}
+
+// histogramFromSnapshotForTest deliberately initializes every mutable field
+// in Histogram. This makes the test fail if Snapshot stops carrying enough
+// state to restore a histogram and continue recording observations.
+func histogramFromSnapshotForTest(t *testing.T, s Snapshot) *Histogram {
+	t.Helper()
+	h := New(Params{
+		Lo:         s.LowestTrackable,
+		Hi:         s.HighestTrackable,
+		ErrorBound: schemaRelativeError(s.PrometheusSchema),
+	})
+	require.Len(t, s.Counts, len(h.counts))
+	for i, count := range s.Counts {
+		h.counts[i].Store(count)
+	}
+	h.ZeroCount.Store(s.ZeroCount)
+	h.Underflow.Store(s.Underflow)
+	h.Overflow.Store(s.Overflow)
+	h.sum.Store(s.TotalSum)
+	require.Equal(t, s.TotalCount, h.Snapshot().TotalCount)
+	return h
 }
