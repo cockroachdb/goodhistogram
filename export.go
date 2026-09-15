@@ -17,6 +17,7 @@ import (
 // ToPrometheusHistogram converts a Snapshot to a prometheusgo.Histogram,
 // populating both conventional bucket fields (for backward compatibility) and
 // native histogram sparse fields (for efficient Prometheus scraping).
+// An unset snapshot exports zero count and sum without a bucket layout.
 func (s *Snapshot) ToPrometheusHistogram() *prometheusgo.Histogram {
 	h := &prometheusgo.Histogram{}
 
@@ -24,6 +25,9 @@ func (s *Snapshot) ToPrometheusHistogram() *prometheusgo.Histogram {
 	sampleSum := float64(s.TotalSum)
 	h.SampleCount = &sampleCount
 	h.SampleSum = &sampleSum
+	if s.isUnset() {
+		return h
+	}
 
 	// Conventional buckets: cumulative counts with upper bounds.
 	h.Bucket = s.conventionalBuckets()

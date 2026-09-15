@@ -152,6 +152,76 @@ func TestSnapshotUnmarshalRejectsInvalid(t *testing.T) {
 	}
 }
 
+func TestSnapshotZeroValue(t *testing.T) {
+	var zero Snapshot
+	t.Run("round trip", func(t *testing.T) {
+		type envelope struct {
+			Snapshot Snapshot
+			Exact    ExactSnapshot
+		}
+		original := envelope{}
+		encoded, err := json.Marshal(original)
+		require.NoError(t, err)
+		var decoded envelope
+		require.NoError(t, json.Unmarshal(encoded, &decoded))
+		require.Equal(t, original, decoded)
+	})
+	t.Run("consumers", func(t *testing.T) {
+		require.NoError(t, zero.Validate())
+		require.Zero(t, zero.ValueAtQuantile(0.5))
+		require.Equal(t, []float64{0, 0, 0}, zero.ValuesAtQuantiles([]float64{0, 0.5, 1}))
+		require.True(t, math.IsNaN(zero.Mean()))
+		count, sum := zero.Total()
+		require.Zero(t, count)
+		require.Zero(t, sum)
+		require.Zero(t, zero.Schema())
+		for _, s := range []Snapshot{zero.Merge(&zero), zero.Sub(&zero)} {
+			require.NoError(t, s.Validate())
+		}
+		exported := zero.ToPrometheusHistogram()
+		require.Zero(t, exported.GetSampleCount())
+		require.Zero(t, exported.GetSampleSum())
+		require.Empty(t, exported.Bucket)
+		require.Nil(t, exported.Schema, "an unset snapshot has no native bucket layout")
+	})
+	t.Run("empty counts", func(t *testing.T) {
+		var decoded Snapshot
+		require.NoError(t, json.Unmarshal([]byte(`{"Counts":[]}`), &decoded))
+		require.NoError(t, decoded.Validate())
+		require.Equal(t, zero.ToPrometheusHistogram(), decoded.ToPrometheusHistogram())
+	})
+	t.Run("partial snapshots remain invalid", func(t *testing.T) {
+		for _, payload := range []string{
+			`{"PrometheusSchema":1}`, `{"LowestTrackable":1}`, `{"HighestTrackable":100}`,
+			`{"Counts":[0]}`, `{"ZeroCount":1}`, `{"Underflow":1}`, `{"Overflow":1}`,
+			`{"TotalCount":1}`, `{"TotalSum":1}`,
+		} {
+			t.Run(payload, func(t *testing.T) {
+				var decoded Snapshot
+				require.Error(t, json.Unmarshal([]byte(payload), &decoded))
+			})
+		}
+	})
+}
+
+func TestSnapshotUnmarshalNull(t *testing.T) {
+	h := New(Params{Lo: 10, Hi: 100, ErrorBound: 0.5})
+	h.Record(50)
+	for _, original := range []Snapshot{{}, h.Snapshot()} {
+		decoded := original
+		require.NoError(t, json.Unmarshal([]byte(" \nnull\t"), &decoded))
+		require.Equal(t, original, decoded)
+		// The method also accepts whitespace when called directly.
+		require.NoError(t, decoded.UnmarshalJSON([]byte(" \nnull\t")))
+		require.Equal(t, original, decoded)
+	}
+	for _, payload := range []string{`{"Min":1,"Max":2}`, `{"Snapshot":null,"Min":1,"Max":2}`} {
+		var decoded ExactSnapshot
+		require.NoError(t, json.Unmarshal([]byte(payload), &decoded))
+		require.Equal(t, ExactSnapshot{Min: 1, Max: 2}, decoded)
+	}
+}
+
 // histogramFromSnapshotForTest deliberately initializes every mutable field
 // in Histogram. This makes the test fail if Snapshot stops carrying enough
 // state to restore a histogram and continue recording observations.

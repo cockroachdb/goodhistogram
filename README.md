@@ -108,6 +108,11 @@ var restored goodhistogram.Snapshot
 err = json.Unmarshal(data, &restored)
 ```
 
+JSON decoding validates the snapshot's layout and counts. For other encodings,
+call `Validate()` after decoding. The zero value is an unset snapshot: it
+round-trips through JSON, returns zero quantiles and a NaN mean, and exports zero
+count and sum without a bucket layout. JSON `null` leaves the destination unchanged.
+
 ### Register with Prometheus
 
 A histogram can be registered with a Prometheus registry via

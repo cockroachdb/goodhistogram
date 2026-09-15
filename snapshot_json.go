@@ -8,10 +8,16 @@
 
 package goodhistogram
 
-import "encoding/json"
+import (
+	"bytes"
+	"encoding/json"
+)
 
-// UnmarshalJSON decodes and validates a Snapshot.
+// UnmarshalJSON decodes and validates a Snapshot. JSON null leaves s unchanged.
 func (s *Snapshot) UnmarshalJSON(data []byte) error {
+	if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
+		return nil
+	}
 	type snapshot Snapshot
 	var decoded snapshot
 	if err := json.Unmarshal(data, &decoded); err != nil {

@@ -412,6 +412,7 @@ func (h *Histogram) Record(v int64) {
 
 // Snapshot is a point-in-time, non-atomic copy of a Histogram, suitable for
 // quantile computation, export, and serialization.
+// The zero value represents an unset snapshot with no observations or layout.
 type Snapshot struct {
 	// These fields define the bucket layout for Counts.
 	PrometheusSchema int32
@@ -431,8 +432,11 @@ func (s *Snapshot) Schema() int32 {
 }
 
 // Validate checks that the snapshot has a valid and internally consistent
-// bucket layout and observation count.
+// bucket layout and observation count. An unset (zero-value) snapshot is valid.
 func (s *Snapshot) Validate() error {
+	if s.isUnset() {
+		return nil
+	}
 	if _, err := s.layoutConfig(); err != nil {
 		return err
 	}
@@ -446,6 +450,12 @@ func (s *Snapshot) Validate() error {
 			s.TotalCount, totalCount)
 	}
 	return nil
+}
+
+func (s *Snapshot) isUnset() bool {
+	return s.PrometheusSchema == 0 && s.LowestTrackable == 0 && s.HighestTrackable == 0 &&
+		len(s.Counts) == 0 && s.ZeroCount == 0 && s.Underflow == 0 && s.Overflow == 0 &&
+		s.TotalCount == 0 && s.TotalSum == 0
 }
 
 func (s *Snapshot) layoutConfig() (*config, error) {
