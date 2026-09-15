@@ -236,7 +236,6 @@ func TestSnapshotArithmeticRejectsDifferentLayouts(t *testing.T) {
 		{"upper bound", New(Params{Lo: 10, Hi: 101, ErrorBound: 0.5}).Snapshot()},
 		{"short counts", short},
 		{"long counts", long},
-		{"unset", Snapshot{}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			for name, op := range map[string]func(*Snapshot, *Snapshot) Snapshot{
@@ -249,6 +248,59 @@ func TestSnapshotArithmeticRejectsDifferentLayouts(t *testing.T) {
 					require.PanicsWithValue(t, message, func() { op(&tc.other, &base) })
 				})
 			}
+		})
+	}
+}
+
+func TestSnapshotArithmeticWithUnset(t *testing.T) {
+	h := New(Params{Lo: 10, Hi: 100, ErrorBound: 0.5})
+	for _, value := range []int64{-1, 5, 25, 200} {
+		h.Record(value)
+	}
+	want := h.Snapshot()
+	for _, payload := range []string{`{}`, `null`, `{"Counts":[]}`} {
+		t.Run(payload, func(t *testing.T) {
+			var unset Snapshot
+			require.NoError(t, json.Unmarshal([]byte(payload), &unset))
+			require.NoError(t, unset.Validate())
+			original := h.Snapshot()
+			for _, result := range []Snapshot{
+				unset.Merge(&original), original.Merge(&unset), original.Sub(&unset),
+			} {
+				require.Equal(t, want, result)
+				require.NoError(t, result.Validate())
+				result.Counts[0]++
+				require.Equal(t, want, original, "result counts must not alias the operand")
+			}
+			require.PanicsWithValue(t,
+				"goodhistogram: cannot subtract snapshots with different bucket layouts",
+				func() { unset.Sub(&original) })
+		})
+	}
+}
+
+func TestExactSnapshotUnsetAccumulator(t *testing.T) {
+	for _, payload := range []string{`{}`, `{"Min":1,"Max":2}`, `{"Snapshot":null,"Min":1,"Max":2}`} {
+		t.Run(payload, func(t *testing.T) {
+			h := NewWithExactMinMax(Params{Lo: 10, Hi: 100, ErrorBound: 0.5})
+			h.Record(50)
+			populated := h.Snapshot()
+			var unset ExactSnapshot
+			require.NoError(t, json.Unmarshal([]byte(payload), &unset))
+			require.NoError(t, unset.Snapshot.Validate())
+			require.Equal(t, populated, unset.Merge(&populated))
+			require.Equal(t, populated, populated.Merge(&unset))
+
+			var acc ExactSnapshot
+			for _, s := range []ExactSnapshot{populated, unset, populated} {
+				acc = acc.Merge(&s)
+			}
+			h.Record(50)
+			want := h.Snapshot()
+			require.Equal(t, want, acc)
+			require.Equal(t, want.Summary(), acc.Summary())
+			require.Equal(t, want.ValueAtQuantile(0.5), acc.ValueAtQuantile(0.5))
+			require.Equal(t, want.ToPrometheusHistogram(), acc.ToPrometheusHistogram())
 		})
 	}
 }

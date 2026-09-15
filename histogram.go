@@ -25,6 +25,7 @@ package goodhistogram
 import (
 	"fmt"
 	"math"
+	"slices"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -528,11 +529,23 @@ func (s *Snapshot) sameLayout(other *Snapshot) bool {
 		len(s.Counts) == len(other.Counts)
 }
 
+func (s Snapshot) clone() Snapshot {
+	s.Counts = slices.Clone(s.Counts)
+	return s
+}
+
 // Merge returns a new Snapshot whose counts are the element-wise sum of s
-// and other. It panics if the snapshots have different bucket layouts
-// (schema, bounds, or count lengths). This is used to merge prev and cur window
-// snapshots in the tick-based windowing pattern.
+// and other. An unset snapshot is the identity: the result copies the other
+// operand's layout and counts. Otherwise, it panics if the snapshots have
+// different bucket layouts (schema, bounds, or count lengths). This is used to
+// merge prev and cur window snapshots in the tick-based windowing pattern.
 func (s *Snapshot) Merge(other *Snapshot) Snapshot {
+	if s.isUnset() {
+		return other.clone()
+	}
+	if other.isUnset() {
+		return s.clone()
+	}
 	if !s.sameLayout(other) {
 		panic("goodhistogram: cannot merge snapshots with different bucket layouts")
 	}
@@ -554,10 +567,19 @@ func (s *Snapshot) Merge(other *Snapshot) Snapshot {
 }
 
 // Sub returns a new Snapshot whose counts are the element-wise difference
-// of s minus other. It panics if the snapshots have different bucket layouts.
-// This is used to compute windowed views by subtracting a baseline snapshot
-// from a current cumulative snapshot.
+// of s minus other. An unset other returns a copy of s. Otherwise, it panics
+// if the snapshots have different bucket layouts, including when s is unset.
+// This is used to compute windowed views by subtracting a baseline snapshot from
+// a current cumulative snapshot.
+//
+// Each unsigned count in s (Counts[i], ZeroCount, Underflow, Overflow, and
+// TotalCount) must be at least the corresponding count in other. Subtraction
+// does not check this precondition: counts wrap modulo 2^64 on underflow, for
+// example if counters reset after the baseline was taken.
 func (s *Snapshot) Sub(other *Snapshot) Snapshot {
+	if other.isUnset() {
+		return s.clone()
+	}
 	if !s.sameLayout(other) {
 		panic("goodhistogram: cannot subtract snapshots with different bucket layouts")
 	}

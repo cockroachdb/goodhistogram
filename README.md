@@ -113,10 +113,11 @@ call `Validate()` after decoding. The zero value is an unset snapshot: it
 round-trips through JSON, returns zero quantiles and a NaN mean, and exports zero
 count and sum without a bucket layout. JSON `null` leaves the destination unchanged.
 
-`Merge` and `Sub` require matching schemas, bounds, and bucket counts; they panic
-on a mismatch. An unset snapshot has no layout, so it cannot be combined with a
-configured snapshot. To initialize an empty accumulator, take a snapshot of an
-empty histogram with the intended parameters.
+An unset snapshot is the identity for `Merge`, so either `var acc Snapshot` or
+`var acc ExactSnapshot` can start an accumulator that adopts the first configured
+snapshot's layout. `Sub` also accepts an unset operand to subtract, but an unset
+receiver cannot subtract a configured snapshot. Otherwise, `Merge` and `Sub`
+require matching schemas, bounds, and bucket counts; they panic on a mismatch.
 
 ### Register with Prometheus
 
