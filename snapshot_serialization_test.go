@@ -16,11 +16,58 @@ package goodhistogram
 
 import (
 	"encoding/json"
+	"fmt"
 	"math"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 )
+
+func TestSnapshotRejectedLayoutDoesNotCacheConfig(t *testing.T) {
+	for i := uint64(1); i <= 3; i++ {
+		s := Snapshot{
+			PrometheusSchema: maxSchema,
+			LowestTrackable:  math.Float64frombits(i),
+			HighestTrackable: 1.797e308,
+			Counts:           []uint64{1},
+			TotalCount:       1,
+		}
+		params := Params{Lo: s.LowestTrackable, Hi: s.HighestTrackable,
+			ErrorBound: schemaRelativeError(s.PrometheusSchema)}
+		_, cached := configCache.Load(params)
+		require.False(t, cached)
+		t.Cleanup(func() { configCache.Delete(params) })
+
+		require.ErrorContains(t, s.Validate(), "counts, expected")
+		_, cached = configCache.Load(params)
+		require.False(t, cached, "rejected layouts must not populate the config cache")
+
+		encoded, err := json.Marshal(s)
+		require.NoError(t, err)
+		var decoded Snapshot
+		require.ErrorContains(t, json.Unmarshal(encoded, &decoded), "counts, expected")
+		_, cached = configCache.Load(params)
+		require.False(t, cached, "rejected JSON must not populate the config cache")
+	}
+}
+
+func TestSnapshotLayoutSchemas(t *testing.T) {
+	for schema := int32(0); schema <= maxSchema; schema++ {
+		for _, bounds := range [][2]float64{{1, 1024}, {1.1, 99.9}, {10, math.Nextafter(10, 11)}} {
+			t.Run(fmt.Sprintf("schema=%d/bounds=%v", schema, bounds), func(t *testing.T) {
+				h := New(Params{Lo: bounds[0], Hi: bounds[1], ErrorBound: schemaRelativeError(schema)})
+				s := h.Snapshot()
+				require.Equal(t, schema, s.Schema())
+				require.NoError(t, s.Validate())
+				encoded, err := json.Marshal(s)
+				require.NoError(t, err)
+				var decoded Snapshot
+				require.NoError(t, json.Unmarshal(encoded, &decoded))
+				require.Equal(t, s, decoded)
+			})
+		}
+	}
+}
 
 func TestSnapshotSerialization(t *testing.T) {
 	h := New(Params{Lo: 10, Hi: 10_000, ErrorBound: 0.2})

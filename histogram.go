@@ -127,6 +127,16 @@ type config struct {
 	boundaries      []float64
 }
 
+// bucketLayout computes the layout without allocating its derived tables.
+func bucketLayout(lo, hi float64, schema int32) (minKey, numBuckets int) {
+	minKey = promBucketKey(lo, schema)
+	// Skip a zero-width first bucket when lo is exactly on a boundary.
+	if getLe(minKey, schema) <= lo {
+		minKey++
+	}
+	return minKey, promBucketKey(hi, schema) - minKey + 1
+}
+
 // newConfig creates a config for the given range [lo, hi] and desired
 // relative error. The schema is chosen as the tightest Prometheus schema
 // whose error is at or below desiredError. Panics if lo <= 0, hi <= lo,
@@ -136,15 +146,7 @@ func newConfig(lo, hi, desiredError float64) config {
 		panic("goodhistogram: invalid config: need 0 < lo < hi and desiredError > 0")
 	}
 	schema := pickSchema(desiredError)
-	minKey := promBucketKey(lo, schema)
-	// If lo lands exactly on a bucket boundary, the first bucket would span
-	// [lo, lo] — a zero-width degenerate bucket. Skip it so the first bucket
-	// starts at lo and ends at the next real boundary above it.
-	if getLe(minKey, schema) <= lo {
-		minKey++
-	}
-	maxKey := promBucketKey(hi, schema)
-	numBuckets := maxKey - minKey + 1
+	minKey, numBuckets := bucketLayout(lo, hi, schema)
 
 	// Precompute bucket boundaries for quantile estimation.
 	boundaries := make([]float64, numBuckets+1)
@@ -455,16 +457,17 @@ func (s *Snapshot) layoutConfig() (*config, error) {
 		s.LowestTrackable <= 0 || s.HighestTrackable <= s.LowestTrackable {
 		return nil, fmt.Errorf("goodhistogram: invalid snapshot bounds: need finite 0 < lowest trackable < highest trackable")
 	}
-	cfg := getOrCreateConfig(Params{
+	// Reject mismatched counts before allocating and permanently caching tables.
+	_, numBuckets := bucketLayout(s.LowestTrackable, s.HighestTrackable, s.PrometheusSchema)
+	if len(s.Counts) != numBuckets {
+		return nil, fmt.Errorf("goodhistogram: snapshot has %d counts, expected %d",
+			len(s.Counts), numBuckets)
+	}
+	return getOrCreateConfig(Params{
 		Lo:         s.LowestTrackable,
 		Hi:         s.HighestTrackable,
 		ErrorBound: schemaRelativeError(s.PrometheusSchema),
-	})
-	if len(s.Counts) != cfg.numBuckets {
-		return nil, fmt.Errorf("goodhistogram: snapshot has %d counts, expected %d",
-			len(s.Counts), cfg.numBuckets)
-	}
-	return cfg, nil
+	}), nil
 }
 
 // config reconstructs the derived configuration from the portable fields.
