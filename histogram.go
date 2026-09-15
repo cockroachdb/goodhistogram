@@ -23,7 +23,9 @@
 package goodhistogram
 
 import (
+	"fmt"
 	"math"
+	"slices"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -126,6 +128,16 @@ type config struct {
 	boundaries      []float64
 }
 
+// bucketLayout computes the layout without allocating its derived tables.
+func bucketLayout(lo, hi float64, schema int32) (minKey, numBuckets int) {
+	minKey = promBucketKey(lo, schema)
+	// Skip a zero-width first bucket when lo is exactly on a boundary.
+	if getLe(minKey, schema) <= lo {
+		minKey++
+	}
+	return minKey, promBucketKey(hi, schema) - minKey + 1
+}
+
 // newConfig creates a config for the given range [lo, hi] and desired
 // relative error. The schema is chosen as the tightest Prometheus schema
 // whose error is at or below desiredError. Panics if lo <= 0, hi <= lo,
@@ -135,15 +147,7 @@ func newConfig(lo, hi, desiredError float64) config {
 		panic("goodhistogram: invalid config: need 0 < lo < hi and desiredError > 0")
 	}
 	schema := pickSchema(desiredError)
-	minKey := promBucketKey(lo, schema)
-	// If lo lands exactly on a bucket boundary, the first bucket would span
-	// [lo, lo] — a zero-width degenerate bucket. Skip it so the first bucket
-	// starts at lo and ends at the next real boundary above it.
-	if getLe(minKey, schema) <= lo {
-		minKey++
-	}
-	maxKey := promBucketKey(hi, schema)
-	numBuckets := maxKey - minKey + 1
+	minKey, numBuckets := bucketLayout(lo, hi, schema)
 
 	// Precompute bucket boundaries for quantile estimation.
 	boundaries := make([]float64, numBuckets+1)
@@ -408,20 +412,83 @@ func (h *Histogram) Record(v int64) {
 }
 
 // Snapshot is a point-in-time, non-atomic copy of a Histogram, suitable for
-// quantile computation and export.
+// quantile computation, export, and serialization.
+// The zero value represents an unset snapshot with no observations or layout.
 type Snapshot struct {
-	cfg        *config
-	Counts     []uint64
-	ZeroCount  uint64
-	Underflow  uint64
-	Overflow   uint64
-	TotalCount uint64
-	TotalSum   int64
+	// These fields define the bucket layout for Counts.
+	PrometheusSchema int32
+	LowestTrackable  float64
+	HighestTrackable float64
+	Counts           []uint64
+	ZeroCount        uint64
+	Underflow        uint64
+	Overflow         uint64
+	TotalCount       uint64
+	TotalSum         int64
 }
 
 // Schema returns the Prometheus native histogram schema (0–8).
 func (s *Snapshot) Schema() int32 {
-	return s.cfg.schema
+	return s.PrometheusSchema
+}
+
+// Validate checks that the snapshot has a valid and internally consistent
+// bucket layout and observation count. An unset (zero-value) snapshot is valid.
+func (s *Snapshot) Validate() error {
+	if s.isUnset() {
+		return nil
+	}
+	if _, err := s.layoutConfig(); err != nil {
+		return err
+	}
+	var totalCount uint64
+	for _, count := range s.Counts {
+		totalCount += count
+	}
+	totalCount += s.ZeroCount + s.Underflow + s.Overflow
+	if totalCount != s.TotalCount {
+		return fmt.Errorf("goodhistogram: snapshot total count %d does not match component count %d",
+			s.TotalCount, totalCount)
+	}
+	return nil
+}
+
+func (s *Snapshot) isUnset() bool {
+	return s.PrometheusSchema == 0 && s.LowestTrackable == 0 && s.HighestTrackable == 0 &&
+		len(s.Counts) == 0 && s.ZeroCount == 0 && s.Underflow == 0 && s.Overflow == 0 &&
+		s.TotalCount == 0 && s.TotalSum == 0
+}
+
+func (s *Snapshot) layoutConfig() (*config, error) {
+	if s.PrometheusSchema < 0 || s.PrometheusSchema > maxSchema {
+		return nil, fmt.Errorf("goodhistogram: invalid snapshot schema %d", s.PrometheusSchema)
+	}
+	if math.IsNaN(s.LowestTrackable) || math.IsInf(s.LowestTrackable, 0) ||
+		math.IsNaN(s.HighestTrackable) || math.IsInf(s.HighestTrackable, 0) ||
+		s.LowestTrackable <= 0 || s.HighestTrackable <= s.LowestTrackable {
+		return nil, fmt.Errorf("goodhistogram: invalid snapshot bounds: need finite 0 < lowest trackable < highest trackable")
+	}
+	// Reject mismatched counts before allocating and permanently caching tables.
+	_, numBuckets := bucketLayout(s.LowestTrackable, s.HighestTrackable, s.PrometheusSchema)
+	if len(s.Counts) != numBuckets {
+		return nil, fmt.Errorf("goodhistogram: snapshot has %d counts, expected %d",
+			len(s.Counts), numBuckets)
+	}
+	return getOrCreateConfig(Params{
+		Lo:         s.LowestTrackable,
+		Hi:         s.HighestTrackable,
+		ErrorBound: schemaRelativeError(s.PrometheusSchema),
+	}), nil
+}
+
+// config reconstructs the derived configuration from the portable fields.
+// Configurations are cached by their construction parameters.
+func (s *Snapshot) config() *config {
+	cfg, err := s.layoutConfig()
+	if err != nil {
+		panic(err)
+	}
+	return cfg
 }
 
 // Snapshot returns a point-in-time copy of the histogram. The snapshot is
@@ -430,12 +497,14 @@ func (s *Snapshot) Schema() int32 {
 // Prometheus makes.
 func (h *Histogram) Snapshot() Snapshot {
 	s := Snapshot{
-		cfg:       h.cfg,
-		Counts:    make([]uint64, h.cfg.numBuckets),
-		ZeroCount: h.ZeroCount.Load(),
-		Underflow: h.Underflow.Load(),
-		Overflow:  h.Overflow.Load(),
-		TotalSum:  h.sum.Load(),
+		PrometheusSchema: h.cfg.schema,
+		LowestTrackable:  h.cfg.lo,
+		HighestTrackable: h.cfg.hi,
+		Counts:           make([]uint64, h.cfg.numBuckets),
+		ZeroCount:        h.ZeroCount.Load(),
+		Underflow:        h.Underflow.Load(),
+		Overflow:         h.Overflow.Load(),
+		TotalSum:         h.sum.Load(),
 	}
 	for i := range s.Counts {
 		c := h.counts[i].Load()
@@ -453,19 +522,43 @@ func (h *Histogram) Schema() int32 {
 	return h.cfg.schema
 }
 
+func (s *Snapshot) sameLayout(other *Snapshot) bool {
+	return s.PrometheusSchema == other.PrometheusSchema &&
+		s.LowestTrackable == other.LowestTrackable &&
+		s.HighestTrackable == other.HighestTrackable &&
+		len(s.Counts) == len(other.Counts)
+}
+
+func (s Snapshot) clone() Snapshot {
+	s.Counts = slices.Clone(s.Counts)
+	return s
+}
+
 // Merge returns a new Snapshot whose counts are the element-wise sum of s
-// and other. Both snapshots must share the same config (same schema and
-// bucket boundaries). This is used to merge prev and cur window snapshots
-// in the tick-based windowing pattern.
+// and other. An unset snapshot is the identity: the result copies the other
+// operand's layout and counts. Otherwise, it panics if the snapshots have
+// different bucket layouts (schema, bounds, or count lengths). This is used to
+// merge prev and cur window snapshots in the tick-based windowing pattern.
 func (s *Snapshot) Merge(other *Snapshot) Snapshot {
+	if s.isUnset() {
+		return other.clone()
+	}
+	if other.isUnset() {
+		return s.clone()
+	}
+	if !s.sameLayout(other) {
+		panic("goodhistogram: cannot merge snapshots with different bucket layouts")
+	}
 	merged := Snapshot{
-		cfg:        s.cfg,
-		Counts:     make([]uint64, len(s.Counts)),
-		ZeroCount:  s.ZeroCount + other.ZeroCount,
-		Underflow:  s.Underflow + other.Underflow,
-		Overflow:   s.Overflow + other.Overflow,
-		TotalCount: s.TotalCount + other.TotalCount,
-		TotalSum:   s.TotalSum + other.TotalSum,
+		PrometheusSchema: s.PrometheusSchema,
+		LowestTrackable:  s.LowestTrackable,
+		HighestTrackable: s.HighestTrackable,
+		Counts:           make([]uint64, len(s.Counts)),
+		ZeroCount:        s.ZeroCount + other.ZeroCount,
+		Underflow:        s.Underflow + other.Underflow,
+		Overflow:         s.Overflow + other.Overflow,
+		TotalCount:       s.TotalCount + other.TotalCount,
+		TotalSum:         s.TotalSum + other.TotalSum,
 	}
 	for i := range s.Counts {
 		merged.Counts[i] = s.Counts[i] + other.Counts[i]
@@ -474,18 +567,32 @@ func (s *Snapshot) Merge(other *Snapshot) Snapshot {
 }
 
 // Sub returns a new Snapshot whose counts are the element-wise difference
-// of s minus other. Both snapshots must share the same config. This is used
-// to compute windowed views by subtracting a baseline snapshot from a
-// current cumulative snapshot.
+// of s minus other. An unset other returns a copy of s. Otherwise, it panics
+// if the snapshots have different bucket layouts, including when s is unset.
+// This is used to compute windowed views by subtracting a baseline snapshot from
+// a current cumulative snapshot.
+//
+// Each unsigned count in s (Counts[i], ZeroCount, Underflow, Overflow, and
+// TotalCount) must be at least the corresponding count in other. Subtraction
+// does not check this precondition: counts wrap modulo 2^64 on underflow, for
+// example if counters reset after the baseline was taken.
 func (s *Snapshot) Sub(other *Snapshot) Snapshot {
+	if other.isUnset() {
+		return s.clone()
+	}
+	if !s.sameLayout(other) {
+		panic("goodhistogram: cannot subtract snapshots with different bucket layouts")
+	}
 	diff := Snapshot{
-		cfg:        s.cfg,
-		Counts:     make([]uint64, len(s.Counts)),
-		ZeroCount:  s.ZeroCount - other.ZeroCount,
-		Underflow:  s.Underflow - other.Underflow,
-		Overflow:   s.Overflow - other.Overflow,
-		TotalCount: s.TotalCount - other.TotalCount,
-		TotalSum:   s.TotalSum - other.TotalSum,
+		PrometheusSchema: s.PrometheusSchema,
+		LowestTrackable:  s.LowestTrackable,
+		HighestTrackable: s.HighestTrackable,
+		Counts:           make([]uint64, len(s.Counts)),
+		ZeroCount:        s.ZeroCount - other.ZeroCount,
+		Underflow:        s.Underflow - other.Underflow,
+		Overflow:         s.Overflow - other.Overflow,
+		TotalCount:       s.TotalCount - other.TotalCount,
+		TotalSum:         s.TotalSum - other.TotalSum,
 	}
 	for i := range s.Counts {
 		diff.Counts[i] = s.Counts[i] - other.Counts[i]

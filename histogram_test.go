@@ -513,9 +513,11 @@ func TestQuantileTopBucketDensity(t *testing.T) {
 	n := cfg.numBuckets
 
 	snap := Snapshot{
-		cfg:        cfg,
-		Counts:     make([]uint64, n),
-		TotalCount: 1000,
+		PrometheusSchema: cfg.schema,
+		LowestTrackable:  cfg.lo,
+		HighestTrackable: cfg.hi,
+		Counts:           make([]uint64, n),
+		TotalCount:       1000,
 	}
 	snap.Counts[n-1] = 1000
 

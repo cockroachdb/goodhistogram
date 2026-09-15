@@ -31,39 +31,40 @@ func (s *Snapshot) ValueAtQuantile(q float64) float64 {
 	if s.TotalCount == 0 {
 		return 0
 	}
+	cfg := s.config()
 	// Target rank (fractional, 0-based) across all observations,
 	// including underflow and overflow.
 	rank := q * float64(s.TotalCount)
 	if rank <= 0 {
 		// Return the lower bound of the first non-empty region.
 		if s.ZeroCount+s.Underflow > 0 {
-			return s.cfg.lo
+			return cfg.lo
 		}
 		for i, c := range s.Counts {
 			if c > 0 {
-				return s.cfg.boundaries[i]
+				return cfg.boundaries[i]
 			}
 		}
-		return s.cfg.hi
+		return cfg.hi
 	}
 	if rank >= float64(s.TotalCount) {
 		// Return the upper bound of the last non-empty region.
 		if s.Overflow > 0 {
-			return s.cfg.hi
+			return cfg.hi
 		}
 		for i := len(s.Counts) - 1; i >= 0; i-- {
 			if s.Counts[i] > 0 {
-				return s.cfg.boundaries[i+1]
+				return cfg.boundaries[i+1]
 			}
 		}
-		return s.cfg.lo
+		return cfg.lo
 	}
 
 	// Underflow and zero observations form an implicit region below lo.
 	// If the quantile falls within this region, clamp to lo.
 	belowLo := float64(s.ZeroCount + s.Underflow)
 	if rank <= belowLo {
-		return s.cfg.lo
+		return cfg.lo
 	}
 	// Adjust rank to be relative to the in-range buckets.
 	rank -= belowLo
@@ -79,7 +80,7 @@ func (s *Snapshot) ValueAtQuantile(q float64) float64 {
 	// in the overflow region. Clamp to hi, matching Prometheus's
 	// behavior of clamping to the last explicit bucket boundary.
 	if rank > float64(inRangeCount) {
-		return s.cfg.hi
+		return cfg.hi
 	}
 
 	n := len(s.Counts)
@@ -88,7 +89,7 @@ func (s *Snapshot) ValueAtQuantile(q float64) float64 {
 	// density[i] = count[i] / width[i]
 	avgDensity := make([]float64, n)
 	for i := range n {
-		w := s.cfg.boundaries[i+1] - s.cfg.boundaries[i]
+		w := cfg.boundaries[i+1] - cfg.boundaries[i]
 		if w > 0 && s.Counts[i] > 0 {
 			avgDensity[i] = float64(s.Counts[i]) / w
 		}
@@ -114,8 +115,8 @@ func (s *Snapshot) ValueAtQuantile(q float64) float64 {
 		fc := float64(s.Counts[i])
 		if cumCount+fc >= rank {
 			localRank := rank - cumCount
-			lo := s.cfg.boundaries[i]
-			hi := s.cfg.boundaries[i+1]
+			lo := cfg.boundaries[i]
+			hi := cfg.boundaries[i+1]
 			w := hi - lo
 			if w <= 0 || fc == 0 {
 				return lo
@@ -129,7 +130,7 @@ func (s *Snapshot) ValueAtQuantile(q float64) float64 {
 		cumCount += fc
 	}
 	// Should not reach here, but clamp to upper bound.
-	return s.cfg.boundaries[n]
+	return cfg.boundaries[n]
 }
 
 // ValuesAtQuantiles returns the estimated values at the given quantiles
@@ -144,6 +145,7 @@ func (s *Snapshot) ValuesAtQuantiles(qs []float64) []float64 {
 	if len(qs) == 0 || s.TotalCount == 0 {
 		return results
 	}
+	cfg := s.config()
 
 	belowLo := float64(s.ZeroCount + s.Underflow)
 	var inRangeCount uint64
@@ -161,12 +163,12 @@ func (s *Snapshot) ValuesAtQuantiles(qs []float64) []float64 {
 		rank := q * float64(s.TotalCount)
 		if rank <= 0 {
 			if s.ZeroCount+s.Underflow > 0 {
-				results[i] = s.cfg.lo
+				results[i] = cfg.lo
 			} else {
-				results[i] = s.cfg.hi
+				results[i] = cfg.hi
 				for j, c := range s.Counts {
 					if c > 0 {
-						results[i] = s.cfg.boundaries[j]
+						results[i] = cfg.boundaries[j]
 						break
 					}
 				}
@@ -175,12 +177,12 @@ func (s *Snapshot) ValuesAtQuantiles(qs []float64) []float64 {
 		}
 		if rank >= float64(s.TotalCount) {
 			if s.Overflow > 0 {
-				results[i] = s.cfg.hi
+				results[i] = cfg.hi
 			} else {
-				results[i] = s.cfg.lo
+				results[i] = cfg.lo
 				for j := len(s.Counts) - 1; j >= 0; j-- {
 					if s.Counts[j] > 0 {
-						results[i] = s.cfg.boundaries[j+1]
+						results[i] = cfg.boundaries[j+1]
 						break
 					}
 				}
@@ -188,12 +190,12 @@ func (s *Snapshot) ValuesAtQuantiles(qs []float64) []float64 {
 			continue
 		}
 		if rank <= belowLo {
-			results[i] = s.cfg.lo
+			results[i] = cfg.lo
 			continue
 		}
 		adjusted := rank - belowLo
 		if adjusted > float64(inRangeCount) {
-			results[i] = s.cfg.hi
+			results[i] = cfg.hi
 			continue
 		}
 		walk = append(walk, walkEntry{idx: i, rank: adjusted})
@@ -213,7 +215,7 @@ func (s *Snapshot) ValuesAtQuantiles(qs []float64) []float64 {
 	// Compute densities once (same as ValueAtQuantile).
 	avgDensity := make([]float64, n)
 	for i := range n {
-		w := s.cfg.boundaries[i+1] - s.cfg.boundaries[i]
+		w := cfg.boundaries[i+1] - cfg.boundaries[i]
 		if w > 0 && s.Counts[i] > 0 {
 			avgDensity[i] = float64(s.Counts[i]) / w
 		}
@@ -234,8 +236,8 @@ func (s *Snapshot) ValuesAtQuantiles(qs []float64) []float64 {
 		nextCum := cumCount + fc
 		for wi < len(walk) && nextCum >= walk[wi].rank {
 			localRank := walk[wi].rank - cumCount
-			lo := s.cfg.boundaries[i]
-			hi := s.cfg.boundaries[i+1]
+			lo := cfg.boundaries[i]
+			hi := cfg.boundaries[i+1]
 			w := hi - lo
 			if w <= 0 || fc == 0 {
 				results[walk[wi].idx] = lo
@@ -254,7 +256,7 @@ func (s *Snapshot) ValuesAtQuantiles(qs []float64) []float64 {
 
 	// Any remaining entries (shouldn't happen, but safety).
 	for ; wi < len(walk); wi++ {
-		results[walk[wi].idx] = s.cfg.boundaries[n]
+		results[walk[wi].idx] = cfg.boundaries[n]
 	}
 
 	return results

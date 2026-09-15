@@ -113,10 +113,12 @@ func TestBucketMappingConsistency(t *testing.T) {
 		// They should be very close since mismatches shift values by at
 		// most one bucket width.
 		refSnap := Snapshot{
-			cfg:        &cfg,
-			Counts:     refCounts,
-			TotalCount: newSnap.TotalCount,
-			TotalSum:   newSnap.TotalSum,
+			PrometheusSchema: cfg.schema,
+			LowestTrackable:  cfg.lo,
+			HighestTrackable: cfg.hi,
+			Counts:           refCounts,
+			TotalCount:       newSnap.TotalCount,
+			TotalSum:         newSnap.TotalSum,
 		}
 		for _, q := range []float64{0.50, 0.75, 0.90, 0.95, 0.99, 0.999} {
 			refQ := refSnap.ValueAtQuantile(q)

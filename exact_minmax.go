@@ -98,13 +98,13 @@ func (h *WithExactMinMax) Summary() Summary {
 // only when Summary().Count > 0. Subtraction is not supported because exact
 // extremes cannot be recovered by subtracting snapshots.
 type ExactSnapshot struct {
-	snapshot Snapshot
+	Snapshot Snapshot
 	Min      int64
 	Max      int64
 }
 
 func (h *WithExactMinMax) Snapshot() ExactSnapshot {
-	es := ExactSnapshot{snapshot: h.histogram.Snapshot()}
+	es := ExactSnapshot{Snapshot: h.histogram.Snapshot()}
 	if mn, mx := h.minVal.Load(), h.maxVal.Load(); mn <= mx {
 		es.Min, es.Max = mn, mx
 	}
@@ -114,7 +114,7 @@ func (h *WithExactMinMax) Snapshot() ExactSnapshot {
 // ValueAtQuantile returns the exact min at q<=0 and max at q>=1 (which may fall
 // outside [lo, hi]); interior quantiles use the base estimate.
 func (s *ExactSnapshot) ValueAtQuantile(q float64) float64 {
-	if s.snapshot.TotalCount == 0 {
+	if s.Snapshot.TotalCount == 0 {
 		return 0
 	}
 	if q <= 0 {
@@ -123,12 +123,12 @@ func (s *ExactSnapshot) ValueAtQuantile(q float64) float64 {
 	if q >= 1 {
 		return float64(s.Max)
 	}
-	return s.snapshot.ValueAtQuantile(q)
+	return s.Snapshot.ValueAtQuantile(q)
 }
 
 func (s *ExactSnapshot) ValuesAtQuantiles(qs []float64) []float64 {
-	res := s.snapshot.ValuesAtQuantiles(qs)
-	if s.snapshot.TotalCount == 0 {
+	res := s.Snapshot.ValuesAtQuantiles(qs)
+	if s.Snapshot.TotalCount == 0 {
 		return res
 	}
 	for i, q := range qs {
@@ -143,11 +143,11 @@ func (s *ExactSnapshot) ValuesAtQuantiles(qs []float64) []float64 {
 }
 
 func (s *ExactSnapshot) Merge(other *ExactSnapshot) ExactSnapshot {
-	m := ExactSnapshot{snapshot: s.snapshot.Merge(&other.snapshot)}
+	m := ExactSnapshot{Snapshot: s.Snapshot.Merge(&other.Snapshot)}
 	switch {
-	case s.snapshot.TotalCount == 0:
+	case s.Snapshot.TotalCount == 0:
 		m.Min, m.Max = other.Min, other.Max
-	case other.snapshot.TotalCount == 0:
+	case other.Snapshot.TotalCount == 0:
 		m.Min, m.Max = s.Min, s.Max
 	default:
 		m.Min = min(s.Min, other.Min)
@@ -158,26 +158,26 @@ func (s *ExactSnapshot) Merge(other *ExactSnapshot) ExactSnapshot {
 
 // Summary returns the exact count, sum, and extremes in the snapshot.
 func (s *ExactSnapshot) Summary() Summary {
-	return Summary{Count: s.snapshot.TotalCount, Sum: s.snapshot.TotalSum, Min: s.Min, Max: s.Max}
+	return Summary{Count: s.Snapshot.TotalCount, Sum: s.Snapshot.TotalSum, Min: s.Min, Max: s.Max}
 }
 
 // Schema returns the Prometheus native histogram schema (0–8).
 func (s *ExactSnapshot) Schema() int32 {
-	return s.snapshot.Schema()
+	return s.Snapshot.Schema()
 }
 
 // Mean returns the arithmetic mean, or zero for an empty snapshot.
 func (s *ExactSnapshot) Mean() float64 {
-	return s.snapshot.Mean()
+	return s.Snapshot.Mean()
 }
 
 // Total returns the observation count and sum.
 func (s *ExactSnapshot) Total() (int64, float64) {
-	return s.snapshot.Total()
+	return s.Snapshot.Total()
 }
 
 // ToPrometheusHistogram exports the bucket counts, sum, and count. Exact
 // extremes are not represented in the Prometheus histogram format.
 func (s *ExactSnapshot) ToPrometheusHistogram() *prometheusgo.Histogram {
-	return s.snapshot.ToPrometheusHistogram()
+	return s.Snapshot.ToPrometheusHistogram()
 }

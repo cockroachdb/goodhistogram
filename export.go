@@ -17,6 +17,7 @@ import (
 // ToPrometheusHistogram converts a Snapshot to a prometheusgo.Histogram,
 // populating both conventional bucket fields (for backward compatibility) and
 // native histogram sparse fields (for efficient Prometheus scraping).
+// An unset snapshot exports zero count and sum without a bucket layout.
 func (s *Snapshot) ToPrometheusHistogram() *prometheusgo.Histogram {
 	h := &prometheusgo.Histogram{}
 
@@ -24,6 +25,9 @@ func (s *Snapshot) ToPrometheusHistogram() *prometheusgo.Histogram {
 	sampleSum := float64(s.TotalSum)
 	h.SampleCount = &sampleCount
 	h.SampleSum = &sampleSum
+	if s.isUnset() {
+		return h
+	}
 
 	// Conventional buckets: cumulative counts with upper bounds.
 	h.Bucket = s.conventionalBuckets()
@@ -42,13 +46,14 @@ func (s *Snapshot) ToPrometheusHistogram() *prometheusgo.Histogram {
 // +Inf bucket has CumulativeCount == SampleCount, as required by the
 // Prometheus exposition format.
 func (s *Snapshot) conventionalBuckets() []*prometheusgo.Bucket {
+	cfg := s.config()
 	buckets := make([]*prometheusgo.Bucket, 0, len(s.Counts)+1)
 	// Zeros and underflow values are below all bucket upper bounds,
 	// so they contribute to every bucket's cumulative count.
 	cumCount := s.ZeroCount + s.Underflow
 	for i, c := range s.Counts {
 		cumCount += c
-		ub := s.cfg.boundaries[i+1]
+		ub := cfg.boundaries[i+1]
 		cc := cumCount
 		buckets = append(buckets, &prometheusgo.Bucket{
 			CumulativeCount: &cc,
@@ -72,7 +77,8 @@ func (s *Snapshot) conventionalBuckets() []*prometheusgo.Bucket {
 // the mapping from internal indices to Prometheus bucket keys is a simple
 // offset addition: promKey = internalIndex + config.minKey.
 func (s *Snapshot) populateNativeFields(h *prometheusgo.Histogram) {
-	schema := s.cfg.schema
+	cfg := s.config()
+	schema := cfg.schema
 	h.Schema = &schema
 
 	// Zero bucket: values at or below zero.
@@ -99,7 +105,7 @@ func (s *Snapshot) populateNativeFields(h *prometheusgo.Histogram) {
 				var offset int32
 				if len(spans) == 0 {
 					// First span: offset is the absolute Prometheus bucket key.
-					offset = int32(s.cfg.minKey + i)
+					offset = int32(cfg.minKey + i)
 				} else {
 					// Subsequent spans: offset is the gap since the previous span ended.
 					offset = int32(gapSinceLastSpan)
