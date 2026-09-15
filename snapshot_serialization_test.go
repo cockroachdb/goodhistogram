@@ -222,6 +222,61 @@ func TestSnapshotUnmarshalNull(t *testing.T) {
 	}
 }
 
+func TestSnapshotArithmeticRejectsDifferentLayouts(t *testing.T) {
+	base := New(Params{Lo: 10, Hi: 100, ErrorBound: 0.5}).Snapshot()
+	short, long := base, base
+	short.Counts = short.Counts[:len(short.Counts)-1]
+	long.Counts = append(append([]uint64(nil), long.Counts...), 0)
+	for _, tc := range []struct {
+		name  string
+		other Snapshot
+	}{
+		{"schema", New(Params{Lo: 10, Hi: 100, ErrorBound: 0.2}).Snapshot()},
+		{"lower bound", New(Params{Lo: 11, Hi: 100, ErrorBound: 0.5}).Snapshot()},
+		{"upper bound", New(Params{Lo: 10, Hi: 101, ErrorBound: 0.5}).Snapshot()},
+		{"short counts", short},
+		{"long counts", long},
+		{"unset", Snapshot{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for name, op := range map[string]func(*Snapshot, *Snapshot) Snapshot{
+				"merge":    (*Snapshot).Merge,
+				"subtract": (*Snapshot).Sub,
+			} {
+				t.Run(name, func(t *testing.T) {
+					message := "goodhistogram: cannot " + name + " snapshots with different bucket layouts"
+					require.PanicsWithValue(t, message, func() { op(&base, &tc.other) })
+					require.PanicsWithValue(t, message, func() { op(&tc.other, &base) })
+				})
+			}
+		})
+	}
+}
+
+func TestSnapshotArithmeticAfterDecode(t *testing.T) {
+	h := New(Params{Lo: 10, Hi: 100, ErrorBound: 0.5})
+	empty := h.Snapshot()
+	for _, value := range []int64{-1, 5, 25, 200} {
+		h.Record(value)
+	}
+	original := h.Snapshot()
+	encoded, err := json.Marshal(original)
+	require.NoError(t, err)
+	var decoded Snapshot
+	require.NoError(t, json.Unmarshal(encoded, &decoded))
+
+	merged := original.Merge(&decoded)
+	for _, value := range []int64{-1, 5, 25, 200} {
+		h.Record(value)
+	}
+	require.Equal(t, h.Snapshot(), merged)
+	require.NoError(t, merged.Validate())
+	require.Equal(t, original, merged.Sub(&decoded))
+	require.Equal(t, original, empty.Merge(&decoded))
+	require.Equal(t, original, decoded.Merge(&empty))
+	require.Equal(t, original, decoded.Sub(&empty))
+}
+
 // histogramFromSnapshotForTest deliberately initializes every mutable field
 // in Histogram. This makes the test fail if Snapshot stops carrying enough
 // state to restore a histogram and continue recording observations.

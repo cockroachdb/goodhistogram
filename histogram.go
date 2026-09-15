@@ -521,11 +521,21 @@ func (h *Histogram) Schema() int32 {
 	return h.cfg.schema
 }
 
+func (s *Snapshot) sameLayout(other *Snapshot) bool {
+	return s.PrometheusSchema == other.PrometheusSchema &&
+		s.LowestTrackable == other.LowestTrackable &&
+		s.HighestTrackable == other.HighestTrackable &&
+		len(s.Counts) == len(other.Counts)
+}
+
 // Merge returns a new Snapshot whose counts are the element-wise sum of s
-// and other. Both snapshots must share the same config (same schema and
-// bucket boundaries). This is used to merge prev and cur window snapshots
-// in the tick-based windowing pattern.
+// and other. It panics if the snapshots have different bucket layouts
+// (schema, bounds, or count lengths). This is used to merge prev and cur window
+// snapshots in the tick-based windowing pattern.
 func (s *Snapshot) Merge(other *Snapshot) Snapshot {
+	if !s.sameLayout(other) {
+		panic("goodhistogram: cannot merge snapshots with different bucket layouts")
+	}
 	merged := Snapshot{
 		PrometheusSchema: s.PrometheusSchema,
 		LowestTrackable:  s.LowestTrackable,
@@ -544,10 +554,13 @@ func (s *Snapshot) Merge(other *Snapshot) Snapshot {
 }
 
 // Sub returns a new Snapshot whose counts are the element-wise difference
-// of s minus other. Both snapshots must share the same config. This is used
-// to compute windowed views by subtracting a baseline snapshot from a
-// current cumulative snapshot.
+// of s minus other. It panics if the snapshots have different bucket layouts.
+// This is used to compute windowed views by subtracting a baseline snapshot
+// from a current cumulative snapshot.
 func (s *Snapshot) Sub(other *Snapshot) Snapshot {
+	if !s.sameLayout(other) {
+		panic("goodhistogram: cannot subtract snapshots with different bucket layouts")
+	}
 	diff := Snapshot{
 		PrometheusSchema: s.PrometheusSchema,
 		LowestTrackable:  s.LowestTrackable,
