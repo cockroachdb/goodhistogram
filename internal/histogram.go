@@ -11,8 +11,10 @@
 package internal
 
 import (
+	"errors"
 	"fmt"
 	"math"
+	"math/bits"
 	"slices"
 	"sort"
 	"sync"
@@ -424,10 +426,21 @@ func (s *Snapshot) Validate() error {
 		return err
 	}
 	var totalCount uint64
-	for _, count := range s.Counts {
-		totalCount += count
+	overflowed := false
+	add := func(v uint64) {
+		var carry uint64
+		totalCount, carry = bits.Add64(totalCount, v, 0)
+		overflowed = overflowed || carry != 0
 	}
-	totalCount += s.ZeroCount + s.Underflow + s.Overflow
+	for _, count := range s.Counts {
+		add(count)
+	}
+	add(s.ZeroCount)
+	add(s.Underflow)
+	add(s.Overflow)
+	if overflowed {
+		return errors.New("goodhistogram: snapshot counts overflow uint64")
+	}
 	if totalCount != s.TotalCount {
 		return fmt.Errorf("goodhistogram: snapshot total count %d does not match component count %d",
 			s.TotalCount, totalCount)
