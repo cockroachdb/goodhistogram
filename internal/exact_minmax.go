@@ -6,7 +6,7 @@
 //
 //     http://www.apache.org/licenses/LICENSE-2.0
 
-package goodhistogram
+package internal
 
 import (
 	"math"
@@ -15,10 +15,7 @@ import (
 	prometheusgo "github.com/prometheus/client_model/go"
 )
 
-// WithExactMinMax wraps a Histogram, additionally tracking the exact min and
-// max recorded values. Extremes span every observation, including out-of-range
-// (Underflow/Overflow) and zero/negative values, so Max may exceed hi and Min
-// may be below lo. A WithExactMinMax must not be copied after first use.
+// WithExactMinMax is documented on goodhistogram.WithExactMinMax.
 type WithExactMinMax struct {
 	histogram Histogram
 
@@ -29,6 +26,7 @@ type WithExactMinMax struct {
 	maxVal atomic.Int64
 }
 
+// NewWithExactMinMax is documented on goodhistogram.NewWithExactMinMax.
 func NewWithExactMinMax(p Params) *WithExactMinMax {
 	h := &WithExactMinMax{}
 	h.histogram.init(p)
@@ -71,8 +69,7 @@ func (h *WithExactMinMax) Schema() int32 {
 	return h.histogram.Schema()
 }
 
-// Summary is an exact summary of the recorded values. Min and Max are
-// meaningful only when Count > 0.
+// Summary is documented on goodhistogram.Summary.
 type Summary struct {
 	Count uint64
 	Sum   int64
@@ -94,9 +91,7 @@ func (h *WithExactMinMax) Summary() Summary {
 	return s
 }
 
-// ExactSnapshot is a Snapshot with exact extremes. Min and Max are meaningful
-// only when Summary().Count > 0. Subtraction is not supported because exact
-// extremes cannot be recovered by subtracting snapshots.
+// ExactSnapshot is documented on goodhistogram.ExactSnapshot.
 type ExactSnapshot struct {
 	Snapshot Snapshot
 	Min      int64

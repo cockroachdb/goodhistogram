@@ -6,7 +6,7 @@
 //
 //     http://www.apache.org/licenses/LICENSE-2.0
 
-package goodhistogram
+package internal
 
 import (
 	"fmt"
@@ -17,10 +17,7 @@ import (
 	prometheusgo "github.com/prometheus/client_model/go"
 )
 
-// HistogramVec is a collection of Histograms partitioned by label values.
-// It implements prometheus.Collector so the entire vec can be registered
-// with a Prometheus registry. Recording is done on the individual
-// *Histogram returned by WithLabelValues.
+// HistogramVec is documented on goodhistogram.HistogramVec.
 type HistogramVec struct {
 	params     Params
 	desc       *prometheus.Desc
@@ -37,8 +34,7 @@ type labeledHistogram struct {
 	labelPairs []*prometheusgo.LabelPair
 }
 
-// NewHistogramVec creates a new HistogramVec. All child histograms share the
-// same Params. The desc is created internally from name, help, and labelNames.
+// NewHistogramVec is documented on goodhistogram.NewHistogramVec.
 func NewHistogramVec(p Params, name, help string, labelNames []string) *HistogramVec {
 	v := &HistogramVec{
 		params:     p,
