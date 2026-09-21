@@ -6,16 +6,14 @@
 //
 //     http://www.apache.org/licenses/LICENSE-2.0
 
-package goodhistogram
+package internal
 
 import (
 	"github.com/prometheus/client_golang/prometheus"
 	prometheusgo "github.com/prometheus/client_model/go"
 )
 
-// WindowedCollector wraps a Windowed histogram as a prometheus.Collector,
-// allowing it to be registered with a Prometheus registry. Collect() exports
-// cumulative data, as Prometheus expects monotonically increasing counters.
+// WindowedCollector is documented on goodhistogram.WindowedCollector.
 type WindowedCollector struct {
 	w    *Windowed
 	desc *prometheus.Desc

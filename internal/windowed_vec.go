@@ -6,7 +6,7 @@
 //
 //     http://www.apache.org/licenses/LICENSE-2.0
 
-package goodhistogram
+package internal
 
 import (
 	"fmt"
@@ -18,10 +18,7 @@ import (
 	prometheusgo "github.com/prometheus/client_model/go"
 )
 
-// WindowedVec is a collection of Windowed histograms partitioned by label
-// values. It implements prometheus.Collector so the entire vec can be
-// registered with a Prometheus registry. Recording is done on the individual
-// *Windowed returned by WithLabelValues.
+// WindowedVec is documented on goodhistogram.WindowedVec.
 type WindowedVec struct {
 	params     Params
 	window     time.Duration
@@ -39,8 +36,7 @@ type labeledWindowed struct {
 	labelPairs []*prometheusgo.LabelPair
 }
 
-// NewWindowedVec creates a new WindowedVec. All child histograms share the
-// same Params and window duration.
+// NewWindowedVec is documented on goodhistogram.NewWindowedVec.
 func NewWindowedVec(
 	p Params, window time.Duration, name, help string, labelNames []string,
 ) *WindowedVec {
