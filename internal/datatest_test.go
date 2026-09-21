@@ -20,7 +20,7 @@ import (
 	"testing"
 )
 
-// Each file in datatest is one self-contained scenario. It has a
+// Each file in ../datatest is one self-contained scenario. It has a
 // hand-authored input section (the histogram params and the values to record)
 // and a generated golden section (the OpenMetrics exposition plus a set of
 // quantiles). The Go implementation is the source of truth: `-rewrite`
@@ -29,8 +29,10 @@ import (
 // exactly, boundaries and quantiles within a small tolerance so platform (libm)
 // differences in the float math don't cause spurious failures.
 //
-// Other implementations can replay the same files to check that they match
-// the Go source of truth. See datatest/README.md.
+// The Rust crate (rust/tests/datatest.rs) reads the SAME files, replays the
+// values against its own implementation, and checks it reproduces the golden.
+// So the two implementations are pinned to one shared, human-readable contract;
+// any divergence fails CI on one side or the other. See datatest/README.md.
 //
 // Regenerate with:
 //
@@ -70,9 +72,10 @@ func TestDatatest(t *testing.T) {
 	}
 }
 
-// Bucket boundaries and quantiles come from floating-point operations whose
-// last bit can differ across platforms, so they are compared within a small
-// relative tolerance. Counts and sum are exact.
+// Tolerances mirror the Rust suite (rust/tests/datatest.rs). Bucket boundaries
+// and quantiles come from powf/sqrt, whose last bit differs across platforms
+// (e.g. arm64 vs the amd64 CI runners) and math libraries, so they are compared
+// within a small relative tolerance. Counts and sum are exact.
 const (
 	boundaryRelTol = 1e-9
 	quantileRelTol = 1e-6
@@ -94,7 +97,8 @@ func runDatatest(t *testing.T, path string) {
 	}
 
 	// Check mode: replay the values and compare the live output to the committed
-	// golden so the fixtures remain a current, portable contract.
+	// golden. This mirrors what the Rust suite does, so both implementations are
+	// checked against one shared, portable contract.
 	body := splitBody(string(raw))
 	if strings.TrimSpace(body) == "" {
 		t.Fatalf("%s has no generated golden; run "+
