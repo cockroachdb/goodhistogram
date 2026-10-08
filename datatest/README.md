@@ -40,6 +40,10 @@ goodhistogram_bucket{le="1024"} 0
 goodhistogram_bucket{le="+Inf"} 5
 goodhistogram_sum 92396500
 goodhistogram_count 5
+schema 3
+zero_count 0
+underflow 0
+overflow 0
 quantile 0 1448.15...
 quantile 0.25 ...
 ...
@@ -53,8 +57,18 @@ The golden output is:
   sit below every finite bucket, so they are folded into every bucket's
   cumulative count; overflow observations appear only in `+Inf`. `_sum` is the
   raw recorded sum in the histogram's own units.
+- **`schema`** — the Prometheus native histogram schema the params resolve to.
+- **`zero_count`, `underflow`, `overflow`** — the out-of-bucket counters,
+  pinned individually because the classic buckets fold zeros and underflow
+  into the same cumulative count. Underflow/overflow are decided by bucket key:
+  the tracked range is `[lo, hi]` widened to the edges of the buckets
+  containing `lo` and `hi` (see `all_underflow.txt`).
 - **Quantiles** at 0, .25, .5, .75, .9, .95, .99, .9999, .99999, 1 (min, p25,
   median, p75, p90, p95, p99, p99.99, p99.999, max).
+
+Every scalar line appears exactly once and the quantile lines are exactly that
+set, in that order; both suites reject a golden that is missing or duplicates
+a line, so a truncated or stale golden fails rather than passing vacuously.
 
 ### Scope
 
@@ -73,7 +87,8 @@ and the Rust side must conform.
 - **Rust** (`rust/tests/datatest.rs`) replays the recorded values against the
   Rust crate and checks it reproduces the golden. It never regenerates.
 
-Both suites compare the same way: exact for bucket counts, sum, and count;
+Both suites compare the same way: exact for bucket counts, sum, count, schema,
+and the zero/underflow/overflow counters;
 bucket boundaries and quantiles within a small relative tolerance (1e-9 and
 1e-6). The tolerance absorbs last-bit differences between math libraries — both
 across languages (Go vs Rust) and across platforms (e.g. the arm64 dev machines
@@ -87,7 +102,7 @@ So: change Go behavior → the Go suite forces a `-rewrite`; forget to update Ru
 From the repo root, after any change that affects bucketing or quantiles:
 
 ```
-go test ./internal/ -run TestDatatest -rewrite
+go test ./internal/ -run 'TestDatatest|TestPresets' -rewrite
 ```
 
 Review the diff, then run both suites (`go test ./...` and, in `rust/`,

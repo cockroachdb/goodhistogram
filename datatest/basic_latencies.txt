@@ -173,6 +173,9 @@ goodhistogram_bucket{le="+Inf"} 5
 goodhistogram_sum 92396500
 goodhistogram_count 5
 schema 3
+zero_count 0
+underflow 0
+overflow 0
 quantile 0 1448.1546878700494
 quantile 0.25 19924.831845003973
 quantile 0.5 387504.45735523594

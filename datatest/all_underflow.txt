@@ -1,6 +1,8 @@
-# Edge case: every value is below lo, so all land in underflow. Underflow sits
-# below every finite bucket, so each bucket's cumulative count is the full
-# total, and quantiles pin to lo.
+# Edge case: every value is below lo. The lower bound is quantized to the edge
+# of lo's bucket (~939 here), not lo itself: 1..500 land in underflow, but 999
+# shares lo's bucket and is counted there. Underflow sits below every finite
+# bucket, so each cumulative count is the full total; quantiles pin to lo until
+# the top tail reaches 999's bucket and interpolates up to its edge (1024).
 
 lo 1000
 hi 1000000
@@ -94,6 +96,9 @@ goodhistogram_bucket{le="+Inf"} 6
 goodhistogram_sum 1557
 goodhistogram_count 6
 schema 3
+zero_count 0
+underflow 5
+overflow 0
 quantile 0 1000
 quantile 0.25 1000
 quantile 0.5 1000
