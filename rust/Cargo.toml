@@ -1,0 +1,27 @@
+[package]
+name = "goodhistogram"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+license = "Apache-2.0"
+description = "Lock-free, Prometheus-aligned exponential histogram. Rust implementation of github.com/cockroachdb/goodhistogram."
+repository = "https://github.com/cockroachdb/goodhistogram"
+readme = "README.md"
+keywords = ["histogram", "metrics", "prometheus", "quantile", "latency"]
+categories = ["data-structures"]
+
+[features]
+# Adapters exposing goodhistogram to the Rust metrics ecosystem. Both are off by
+# default so the core library stays dependency-free and builds offline.
+#   prometheus        -> tikv `prometheus` crate (Collector)
+#   prometheus-client -> `prometheus-client` crate (OpenMetrics-native Collector)
+prometheus = ["dep:prometheus"]
+prometheus-client = ["dep:prometheus-client"]
+
+# The core library has no dependencies -- recording is a couple of atomics and
+# std bit ops, and the datatest harness (tests/datatest.rs) parses its fixtures
+# by hand. The optional dependencies below are pulled in only by the matching
+# features above.
+[dependencies]
+prometheus = { version = "0.13", default-features = false, optional = true }
+prometheus-client = { version = "0.22", optional = true }
