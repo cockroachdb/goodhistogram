@@ -6,7 +6,7 @@
 //
 //     http://www.apache.org/licenses/LICENSE-2.0
 
-// Package goodhistogram provides an exponential histogram with Prometheus
+// Package internal provides an exponential histogram with Prometheus
 // native histogram schema alignment, bounded relative error, and trapezoidal
 // quantile estimation.
 //
@@ -20,7 +20,7 @@
 // Because the bucket layout is identical to a Prometheus native histogram
 // schema, export to the Prometheus sparse format requires no remapping — our
 // internal indices are Prometheus bucket indices offset by a constant.
-package goodhistogram
+package internal
 
 import (
 	"fmt"
@@ -368,8 +368,9 @@ func (h *Histogram) init(p Params) {
 }
 
 // Record adds a value to the histogram. This is the hot path: O(1), lock-free,
-// no allocations. Values <= 0 are counted in ZeroCount. Values outside [lo, hi]
-// are clamped and counted in Underflow/Overflow respectively.
+// no allocations. Values <= 0 are counted in ZeroCount. The tracked range is
+// [lo, hi] widened to the edges of the buckets containing lo and hi; values
+// outside it are counted in Underflow/Overflow respectively.
 //
 // Bucket index is computed via math.Frexp (IEEE 754 bit extraction) plus a
 // precomputed lookup table indexed by the top mantissa bits. This
@@ -394,8 +395,9 @@ func (h *Histogram) Record(v int64) {
 	key := sub + (exp-1)*h.cfg.bucketsPerGroup
 	idx := key - h.cfg.minKey
 
-	// Clamp to valid range. Values outside [lo, hi] are counted in
-	// Underflow/Overflow but are NOT added to any bucket. This matches
+	// Clamp to valid range. Values in buckets below lo's bucket or above
+	// hi's bucket are counted in Underflow/Overflow but are NOT added to
+	// any bucket. This matches
 	// the Prometheus convention where out-of-range values go to an
 	// implicit -Inf/+Inf bucket that is excluded from interpolation,
 	// and quantile estimation clamps to lo/hi when the quantile falls
