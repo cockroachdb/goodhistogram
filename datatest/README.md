@@ -7,7 +7,9 @@ other implementations can replay the same scenarios and compare their results.
 Each `*.txt` file is a self-contained scenario with two sections. The first is
 hand-authored input containing histogram parameters and recorded values. The
 second is generated output containing the classic Prometheus buckets, count,
-sum, schema, and representative quantiles.
+sum, schema, the zero/underflow/overflow counters, and representative
+quantiles. Every scalar line appears exactly once, and the quantile lines cover
+the same fixed set of quantiles in every file.
 
 ```text
 lo 1000
@@ -23,12 +25,18 @@ goodhistogram_bucket{le="+Inf"} 3
 goodhistogram_sum 771500
 goodhistogram_count 3
 schema 3
+zero_count 0
+underflow 0
+overflow 0
 quantile 0 1448.1546878700494
 ...
 ```
 
 The fixtures pin the classic `le`-bucket projection rather than the native
-histogram span/delta encoding. Bucket counts, count, sum, and schema are exact.
+histogram span/delta encoding. Because the classic buckets fold zeros and
+underflow into the same cumulative count, the zero, underflow, and overflow
+counters are pinned separately. Bucket counts, count, sum, schema, and the
+counters are exact.
 Bucket boundaries and quantiles use small relative tolerances to absorb
 last-bit floating-point differences across platforms and math libraries.
 

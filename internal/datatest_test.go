@@ -126,12 +126,22 @@ type golden struct {
 	sum       int64
 	count     uint64
 	schema    int32
+	zeroCount uint64
+	underflow uint64
+	overflow  uint64
 	quantiles []goldenQuantile
 }
 
+// goldenScalars are the keys that must each appear exactly once in a golden.
+var goldenScalars = []string{"sum", "count", "schema", "zero_count", "underflow", "overflow"}
+
 // parseGolden reads the generated golden section back into structured values.
+// It requires every scalar line exactly once and the quantile set to equal
+// datatestQuantiles, so a truncated or stale golden fails instead of passing
+// vacuously.
 func parseGolden(t *testing.T, body string) golden {
 	var g golden
+	seen := make(map[string]int)
 	for _, line := range strings.Split(body, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
@@ -152,12 +162,39 @@ func parseGolden(t *testing.T, body string) golden {
 			})
 		case key == "schema":
 			g.schema = int32(mustInt(t, fields[1]))
-		case strings.HasSuffix(key, "_count"):
+			seen["schema"]++
+		case key == "zero_count":
+			g.zeroCount = mustUint(t, fields[1])
+			seen["zero_count"]++
+		case key == "underflow":
+			g.underflow = mustUint(t, fields[1])
+			seen["underflow"]++
+		case key == "overflow":
+			g.overflow = mustUint(t, fields[1])
+			seen["overflow"]++
+		case key == metricName+"_count":
 			g.count = mustUint(t, fields[1])
-		case strings.HasSuffix(key, "_sum"):
+			seen["count"]++
+		case key == metricName+"_sum":
 			g.sum = mustInt(t, fields[1])
+			seen["sum"]++
 		default:
 			t.Fatalf("unexpected golden line %q", line)
+		}
+	}
+	for _, k := range goldenScalars {
+		if seen[k] != 1 {
+			t.Fatalf("golden has %d %q lines, want exactly 1; run -rewrite", seen[k], k)
+		}
+	}
+	if len(g.quantiles) != len(datatestQuantiles) {
+		t.Fatalf("golden has %d quantiles, want %d; run -rewrite",
+			len(g.quantiles), len(datatestQuantiles))
+	}
+	for i, q := range g.quantiles {
+		if q.q != datatestQuantiles[i] {
+			t.Fatalf("golden quantile[%d] is q=%g, want q=%g; run -rewrite",
+				i, q.q, datatestQuantiles[i])
 		}
 	}
 	return g
@@ -183,8 +220,8 @@ func parseLe(t *testing.T, token string) float64 {
 }
 
 // compareToGolden asserts the live snapshot reproduces the golden: bucket
-// boundaries and quantiles within tolerance, cumulative counts, sum, and count
-// exact.
+// boundaries and quantiles within tolerance; cumulative counts, sum, count,
+// schema, and the zero/underflow/overflow counters exact.
 func compareToGolden(t *testing.T, snap *Snapshot, exp golden) {
 	buckets := snap.ToPrometheusHistogram().GetBucket()
 	if len(buckets) != len(exp.buckets) {
@@ -207,6 +244,15 @@ func compareToGolden(t *testing.T, snap *Snapshot, exp golden) {
 	}
 	if snap.Schema() != exp.schema {
 		t.Errorf("schema: got %d, golden %d", snap.Schema(), exp.schema)
+	}
+	if snap.ZeroCount != exp.zeroCount {
+		t.Errorf("zero_count: got %d, golden %d", snap.ZeroCount, exp.zeroCount)
+	}
+	if snap.Underflow != exp.underflow {
+		t.Errorf("underflow: got %d, golden %d", snap.Underflow, exp.underflow)
+	}
+	if snap.Overflow != exp.overflow {
+		t.Errorf("overflow: got %d, golden %d", snap.Overflow, exp.overflow)
 	}
 	for _, q := range exp.quantiles {
 		if got := snap.ValueAtQuantile(q.q); !closeEnough(got, q.v, quantileRelTol) {
@@ -273,6 +319,9 @@ func generateGolden(in datatestInput) string {
 	fmt.Fprintf(&b, "%s_sum %d\n", metricName, snap.TotalSum)
 	fmt.Fprintf(&b, "%s_count %d\n", metricName, snap.TotalCount)
 	fmt.Fprintf(&b, "schema %d\n", snap.Schema())
+	fmt.Fprintf(&b, "zero_count %d\n", snap.ZeroCount)
+	fmt.Fprintf(&b, "underflow %d\n", snap.Underflow)
+	fmt.Fprintf(&b, "overflow %d\n", snap.Overflow)
 	for _, q := range datatestQuantiles {
 		fmt.Fprintf(&b, "quantile %s %s\n",
 			strconv.FormatFloat(q, 'g', -1, 64),
