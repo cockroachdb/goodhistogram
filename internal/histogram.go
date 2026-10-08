@@ -196,8 +196,9 @@ func newConfig(lo, hi, desiredError float64) config {
 
 // Params is documented on goodhistogram.Params.
 type Params struct {
-	// Lo and Hi define the tracked value range. Values outside this range
-	// are counted in Underflow/Overflow.
+	// Lo and Hi select the lowest and highest buckets: the buckets that
+	// contain them. The tracked range widens to those buckets' edges; values
+	// below lo's bucket or above hi's bucket are counted in Underflow/Overflow.
 	Lo, Hi float64
 	// ErrorBound is the maximum relative error bound. The histogram
 	// selects the tightest Prometheus schema whose error is at or below
@@ -321,8 +322,9 @@ func (h *Histogram) init(p Params) {
 }
 
 // Record adds a value to the histogram. This is the hot path: O(1), lock-free,
-// no allocations. Values <= 0 are counted in ZeroCount. Values outside [lo, hi]
-// are clamped and counted in Underflow/Overflow respectively.
+// no allocations. Values <= 0 are counted in ZeroCount. The tracked range is
+// [lo, hi] widened to the edges of the buckets containing lo and hi; values
+// outside it are counted in Underflow/Overflow respectively.
 //
 // Bucket index is computed via math.Frexp (IEEE 754 bit extraction) plus a
 // precomputed lookup table indexed by the top mantissa bits. This
@@ -347,8 +349,9 @@ func (h *Histogram) Record(v int64) {
 	key := sub + (exp-1)*h.cfg.bucketsPerGroup
 	idx := key - h.cfg.minKey
 
-	// Clamp to valid range. Values outside [lo, hi] are counted in
-	// Underflow/Overflow but are NOT added to any bucket. This matches
+	// Clamp to valid range. Values in buckets below lo's bucket or above
+	// hi's bucket are counted in Underflow/Overflow but are NOT added to
+	// any bucket. This matches
 	// the Prometheus convention where out-of-range values go to an
 	// implicit -Inf/+Inf bucket that is excluded from interpolation,
 	// and quantile estimation clamps to lo/hi when the quantile falls
