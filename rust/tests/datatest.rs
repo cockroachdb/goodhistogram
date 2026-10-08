@@ -10,10 +10,11 @@
 //!
 //! Each `../datatest/*.txt` file has a hand-authored input section (params +
 //! values) and a golden section generated from the canonical Go implementation
-//! (`go test ./internal/ -run TestDatatest -rewrite`): the OpenMetrics exposition plus
-//! a set of quantiles. This test records the same values in Rust and asserts it
-//! reproduces the golden — bucket counts and sum exactly, boundaries and
-//! quantiles within a small tolerance for cross-language float (libm) drift.
+//! (`go test ./internal/ -run TestDatatest -rewrite`): the OpenMetrics exposition,
+//! schema, zero/underflow/overflow counters, and a set of quantiles. This test
+//! records the same values in Rust and asserts it reproduces the golden — counts,
+//! sum, schema, and counters exactly, boundaries and quantiles within a small
+//! tolerance for cross-language float (libm) drift.
 //!
 //! Go owns the golden; Rust only verifies. See datatest/README.md.
 
@@ -29,6 +30,20 @@ const BOUNDARY_REL_TOL: f64 = 1e-9;
 /// little more slack.
 const QUANTILE_REL_TOL: f64 = 1e-6;
 
+/// Must match `datatestQuantiles` in internal/datatest_test.go; a golden with a
+/// different set is stale.
+const QUANTILES: [f64; 10] = [0.0, 0.25, 0.5, 0.75, 0.9, 0.95, 0.99, 0.9999, 0.99999, 1.0];
+
+/// Golden lines that must each appear exactly once.
+const SCALARS: [&str; 6] = [
+    "sum",
+    "count",
+    "schema",
+    "zero_count",
+    "underflow",
+    "overflow",
+];
+
 #[derive(Default)]
 struct Scenario {
     lo: f64,
@@ -39,6 +54,9 @@ struct Scenario {
     sum: i64,
     count: u64,
     schema: i32,
+    zero_count: u64,
+    underflow: u64,
+    overflow: u64,
     quantiles: Vec<(f64, f64)>,
 }
 
@@ -93,6 +111,9 @@ fn check_scenario(sc: &Scenario, name: &str) {
     assert_eq!(snap.total_sum, sc.sum, "[{name}] sum");
     assert_eq!(snap.total_count, sc.count, "[{name}] count");
     assert_eq!(snap.schema(), sc.schema, "[{name}] schema");
+    assert_eq!(snap.zero_count, sc.zero_count, "[{name}] zero_count");
+    assert_eq!(snap.underflow, sc.underflow, "[{name}] underflow");
+    assert_eq!(snap.overflow, sc.overflow, "[{name}] overflow");
 
     for &(q, want) in &sc.quantiles {
         let got = snap.value_at_quantile(q);
@@ -118,6 +139,7 @@ fn close(a: f64, b: f64, rel: f64) -> bool {
 
 fn parse_scenario(text: &str, name: &str) -> Scenario {
     let mut sc = Scenario::default();
+    let mut seen = std::collections::HashMap::<&str, usize>::new();
     for raw in text.lines() {
         let line = raw.trim();
         if line.is_empty() || line.starts_with('#') {
@@ -130,7 +152,27 @@ fn parse_scenario(text: &str, name: &str) -> Scenario {
             "hi" => sc.hi = f(&mut it, name),
             "error_bound" => sc.error_bound = f(&mut it, name),
             "values" => sc.values = it.map(|t| parse::<i64>(t, name)).collect(),
-            "schema" => sc.schema = parse(it.next().expect("schema value"), name),
+            "schema"
+            | "zero_count"
+            | "underflow"
+            | "overflow"
+            | "goodhistogram_count"
+            | "goodhistogram_sum" => {
+                let v = it
+                    .next()
+                    .unwrap_or_else(|| panic!("[{name}] {key} missing value"));
+                let scalar = key.strip_prefix("goodhistogram_").unwrap_or(key);
+                *seen.entry(scalar).or_default() += 1;
+                match scalar {
+                    "schema" => sc.schema = parse(v, name),
+                    "zero_count" => sc.zero_count = parse(v, name),
+                    "underflow" => sc.underflow = parse(v, name),
+                    "overflow" => sc.overflow = parse(v, name),
+                    "count" => sc.count = parse(v, name),
+                    "sum" => sc.sum = parse(v, name),
+                    _ => unreachable!(),
+                }
+            }
             "quantile" => {
                 let q = f(&mut it, name);
                 let v = f(&mut it, name);
@@ -141,11 +183,15 @@ fn parse_scenario(text: &str, name: &str) -> Scenario {
                 let cum = parse::<u64>(it.next().expect("bucket count"), name);
                 sc.buckets.push((le, cum));
             }
-            _ if key.ends_with("_count") => sc.count = parse(it.next().unwrap(), name),
-            _ if key.ends_with("_sum") => sc.sum = parse(it.next().unwrap(), name),
             other => panic!("[{name}] unknown key {other:?}"),
         }
     }
+    for k in SCALARS {
+        let n = seen.get(k).copied().unwrap_or(0);
+        assert_eq!(n, 1, "[{name}] golden has {n} {k:?} lines, want exactly 1");
+    }
+    let qs: Vec<f64> = sc.quantiles.iter().map(|&(q, _)| q).collect();
+    assert_eq!(qs, QUANTILES, "[{name}] golden quantile set is stale");
     sc
 }
 

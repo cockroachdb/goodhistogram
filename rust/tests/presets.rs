@@ -11,7 +11,7 @@
 //! `../datatest/presets.golden` is generated from Go (`go test ./internal/ -run
 //! TestPresets -rewrite`). This test looks up each Rust preset const by the
 //! shared Go name and asserts identical lo/hi, error_bound (within tolerance for
-//! powf drift), schema, and bucket count.
+//! powf drift), schema, min_key, and bucket count.
 
 use goodhistogram::*;
 
@@ -36,6 +36,7 @@ struct Golden {
     hi: f64,
     error_bound: f64,
     schema: i32,
+    min_key: i32,
     num_buckets: usize,
 }
 
@@ -67,8 +68,18 @@ fn presets_match_go() {
         let h = Histogram::new(p);
         let snap = h.snapshot();
         assert_eq!(snap.schema(), g.schema, "{name} schema");
+        assert_eq!(min_key(&snap), g.min_key, "{name} min_key");
         assert_eq!(snap.counts.len(), g.num_buckets, "{name} num_buckets");
     }
+}
+
+/// Recovers the Prometheus bucket key of `counts[0]` from its upper edge,
+/// `boundaries()[1] = 2^(min_key / 2^schema)`. Adjacent keys are 2^-schema
+/// apart in log2 space, so rounding absorbs any float drift.
+fn min_key(snap: &Snapshot) -> i32 {
+    let b = snap.boundaries();
+    assert!(b.len() > 2, "need an interior boundary to recover min_key");
+    (b[1].log2() * f64::from(1 << snap.schema())).round() as i32
 }
 
 fn parse(text: &str) -> Vec<(String, Golden)> {
@@ -79,7 +90,7 @@ fn parse(text: &str) -> Vec<(String, Golden)> {
             continue;
         }
         let f: Vec<&str> = line.split_whitespace().collect();
-        assert!(f.len() == 7 && f[0] == "preset", "malformed line: {line}");
+        assert!(f.len() == 8 && f[0] == "preset", "malformed line: {line}");
         out.push((
             f[1].to_string(),
             Golden {
@@ -87,7 +98,8 @@ fn parse(text: &str) -> Vec<(String, Golden)> {
                 hi: f[3].parse().unwrap(),
                 error_bound: f[4].parse().unwrap(),
                 schema: f[5].parse().unwrap(),
-                num_buckets: f[6].parse().unwrap(),
+                min_key: f[6].parse().unwrap(),
+                num_buckets: f[7].parse().unwrap(),
             },
         ));
     }
