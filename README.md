@@ -217,8 +217,9 @@ allocations:
 
 1. Convert to `float64` and extract the IEEE 754 bits.
 2. Compute the exponent from the biased exponent field: `exp = bits>>52 - 1022`.
-3. Look up the bucket index from a precomputed 256-entry table indexed by the
-   top 8 bits of the mantissa.
+3. Look up the bucket index from a precomputed 512-entry table indexed by the
+   top 9 bits of the mantissa. Each entry spans at most one bucket boundary,
+   so one comparison against that boundary gives the exact Prometheus bucket.
 4. Combine: `key = bucket + (exp-1) * bucketsPerGroup`, then
    `idx = key - minKey`.
 5. `counts[idx].Add(1)`.
@@ -275,19 +276,12 @@ modest amount of extra memory for a guarantee that holds.
 
 ### Sacrifices in Accuracy
 
-As a final note on the design, goodhistogram takes two tracks which
-theoretically affect quantile accuracy. The first is that it does not lock on
-snapshot, which means that snapshots can be inconsistent. Inconsistent in this
+As a final note on the design, goodhistogram takes one shortcut which
+theoretically affects quantile accuracy: it does not lock on snapshot, which
+means that snapshots can be inconsistent. Inconsistent in this
 case means that the `TotalSum` seen for the histogram can be greater than the sum
 of its parts. In practice, the likelihood of this is low enough, and the order
 of the effect small enough, that no detectable difference would be seen.
-
-Bucket lookup is imprecise as well. Because of the techniques used to make
-bucket lookup constant, ~0.45% of the samples will be incorrectly rounded to a
-neighboring bucket. The resulting distortion however is small (.02%) compared
-to the performance gains that it allows for. The distortions seen are similar
-to the ones seen in non-linear bucketing formats, which too optimize for lookup
-performance.
 
 ## Performance Notes
 
