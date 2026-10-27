@@ -45,12 +45,12 @@ func (s *Snapshot) ValueAtQuantile(q float64) float64 {
 				return cfg.boundaries[i]
 			}
 		}
-		return cfg.hi
+		return cfg.top()
 	}
 	if rank >= float64(s.TotalCount) {
 		// Return the upper bound of the last non-empty region.
 		if s.Overflow > 0 {
-			return cfg.hi
+			return cfg.top()
 		}
 		for i := len(s.Counts) - 1; i >= 0; i-- {
 			if s.Counts[i] > 0 {
@@ -77,10 +77,10 @@ func (s *Snapshot) ValueAtQuantile(q float64) float64 {
 	}
 
 	// If the quantile falls beyond all in-range observations, it's
-	// in the overflow region. Clamp to hi, matching Prometheus's
-	// behavior of clamping to the last explicit bucket boundary.
+	// in the overflow region. Clamp to the top edge of hi's bucket, matching
+	// Prometheus's behavior of clamping to the last explicit bucket boundary.
 	if rank > float64(inRangeCount) {
-		return cfg.hi
+		return cfg.top()
 	}
 
 	n := len(s.Counts)
@@ -165,7 +165,7 @@ func (s *Snapshot) ValuesAtQuantiles(qs []float64) []float64 {
 			if s.ZeroCount+s.Underflow > 0 {
 				results[i] = cfg.lo
 			} else {
-				results[i] = cfg.hi
+				results[i] = cfg.top()
 				for j, c := range s.Counts {
 					if c > 0 {
 						results[i] = cfg.boundaries[j]
@@ -177,7 +177,7 @@ func (s *Snapshot) ValuesAtQuantiles(qs []float64) []float64 {
 		}
 		if rank >= float64(s.TotalCount) {
 			if s.Overflow > 0 {
-				results[i] = cfg.hi
+				results[i] = cfg.top()
 			} else {
 				results[i] = cfg.lo
 				for j := len(s.Counts) - 1; j >= 0; j-- {
@@ -195,7 +195,7 @@ func (s *Snapshot) ValuesAtQuantiles(qs []float64) []float64 {
 		}
 		adjusted := rank - belowLo
 		if adjusted > float64(inRangeCount) {
-			results[i] = cfg.hi
+			results[i] = cfg.top()
 			continue
 		}
 		walk = append(walk, walkEntry{idx: i, rank: adjusted})
