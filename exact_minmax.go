@@ -98,9 +98,9 @@ func (h *WithExactMinMax) Summary() Summary {
 // only when Summary().Count > 0. Subtraction is not supported because exact
 // extremes cannot be recovered by subtracting snapshots.
 type ExactSnapshot struct {
-	Snapshot Snapshot
-	Min      int64
-	Max      int64
+	Snapshot Snapshot `json:"snapshot"`
+	Min      int64    `json:"min"`
+	Max      int64    `json:"max"`
 }
 
 func (h *WithExactMinMax) Snapshot() ExactSnapshot {

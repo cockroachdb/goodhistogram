@@ -416,15 +416,15 @@ func (h *Histogram) Record(v int64) {
 // The zero value represents an unset snapshot with no observations or layout.
 type Snapshot struct {
 	// These fields define the bucket layout for Counts.
-	PrometheusSchema int32
-	LowestTrackable  float64
-	HighestTrackable float64
-	Counts           []uint64
-	ZeroCount        uint64
-	Underflow        uint64
-	Overflow         uint64
-	TotalCount       uint64
-	TotalSum         int64
+	PrometheusSchema int32    `json:"schema"`
+	LowestTrackable  float64  `json:"lowest_trackable"`
+	HighestTrackable float64  `json:"highest_trackable"`
+	Counts           []uint64 `json:"counts"`
+	ZeroCount        uint64   `json:"zero_count"`
+	Underflow        uint64   `json:"underflow"`
+	Overflow         uint64   `json:"overflow"`
+	TotalCount       uint64   `json:"total_count"`
+	TotalSum         int64    `json:"total_sum"`
 }
 
 // Schema returns the Prometheus native histogram schema (0–8).
