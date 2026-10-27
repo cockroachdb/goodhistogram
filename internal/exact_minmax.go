@@ -93,9 +93,9 @@ func (h *WithExactMinMax) Summary() Summary {
 
 // ExactSnapshot is documented on goodhistogram.ExactSnapshot.
 type ExactSnapshot struct {
-	Snapshot Snapshot
-	Min      int64
-	Max      int64
+	Snapshot Snapshot `json:"snapshot"`
+	Min      int64    `json:"min"`
+	Max      int64    `json:"max"`
 }
 
 func (h *WithExactMinMax) Snapshot() ExactSnapshot {
