@@ -91,7 +91,7 @@ func TestValuesAtQuantilesIntoConcurrentWithRecord(t *testing.T) {
 			for !stop.Load() {
 				got := h.ValuesAtQuantilesInto(buf[:0], qs)
 				for i, v := range got {
-					if v < benchLo || v > benchHi {
+					if v < benchLo || v > h.cfg.top() {
 						t.Errorf("q=%g: out-of-range value %g", qs[i], v)
 						return
 					}
