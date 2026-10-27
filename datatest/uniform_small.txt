@@ -79,3 +79,4 @@ quantile 0.99 89.68335497751461
 quantile 0.9999 90.50140486173446
 quantile 0.99999 90.50884167886373
 quantile 1 90.50966799187809
+snapshot_json {"schema":3,"lowest_trackable":1,"highest_trackable":100,"counts":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,1,0,0,0,0,1,0,0,1,0,0,1,0,1,0,0,1,0,0,1,0,1,0,1,0,1,0,0],"zero_count":0,"underflow":0,"overflow":0,"total_count":11,"total_sum":420}

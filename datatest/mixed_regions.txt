@@ -82,3 +82,4 @@ quantile 0.99 10000
 quantile 0.9999 10000
 quantile 0.99999 10000
 quantile 1 10000
+snapshot_json {"schema":3,"lowest_trackable":100,"highest_trackable":10000,"counts":[0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0],"zero_count":2,"underflow":2,"overflow":2,"total_count":9,"total_sum":76205}

@@ -106,3 +106,4 @@ quantile 0.99 1
 quantile 0.9999 1
 quantile 0.99999 1
 quantile 1 1
+snapshot_json {"schema":3,"lowest_trackable":1,"highest_trackable":1000,"counts":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"zero_count":4,"underflow":0,"overflow":0,"total_count":4,"total_sum":-106}

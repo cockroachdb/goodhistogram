@@ -1,0 +1,45 @@
+# Snapshot JSON decoding cases, hand-authored. Each line is `accept <json>` or
+# `reject <json>`. An implementation must decode every accepted payload into a
+# valid snapshot and must refuse every rejected one. The base snapshot below is
+# lo 10, hi 100, error_bound 0.5 (schema 1, 8 buckets) after recording 0, 5,
+# 50, and 500. Verified by snapshot_cases_test.go.
+
+# A valid populated snapshot.
+accept {"schema":1,"lowest_trackable":10,"highest_trackable":100,"counts":[0,0,0,0,0,1,0,0],"zero_count":1,"underflow":1,"overflow":1,"total_count":4,"total_sum":555}
+
+# Unset snapshots: no layout and no observations.
+accept {}
+accept null
+accept {"counts":[]}
+
+# Field order does not matter.
+accept {"total_sum":555,"total_count":4,"overflow":1,"underflow":1,"zero_count":1,"counts":[0,0,0,0,0,1,0,0],"highest_trackable":100,"lowest_trackable":10,"schema":1}
+
+# Wrong number of counts for the layout.
+reject {"schema":1,"lowest_trackable":10,"highest_trackable":100,"counts":[0,0,0,0,1,0,0],"zero_count":1,"underflow":1,"overflow":1,"total_count":4,"total_sum":555}
+
+# total_count does not equal the sum of every count.
+reject {"schema":1,"lowest_trackable":10,"highest_trackable":100,"counts":[0,0,0,0,0,1,0,0],"zero_count":1,"underflow":1,"overflow":1,"total_count":5,"total_sum":555}
+
+# Schema outside 0-8.
+reject {"schema":9,"lowest_trackable":10,"highest_trackable":100,"counts":[0],"zero_count":0,"underflow":0,"overflow":0,"total_count":0,"total_sum":0}
+reject {"schema":-1,"lowest_trackable":10,"highest_trackable":100,"counts":[0],"zero_count":0,"underflow":0,"overflow":0,"total_count":0,"total_sum":0}
+
+# Bounds must satisfy 0 < lowest_trackable < highest_trackable.
+reject {"schema":1,"lowest_trackable":0,"highest_trackable":100,"counts":[0,0,0,0,0,1,0,0],"zero_count":1,"underflow":1,"overflow":1,"total_count":4,"total_sum":555}
+reject {"schema":1,"lowest_trackable":100,"highest_trackable":100,"counts":[0,0,0,0,0,1,0,0],"zero_count":1,"underflow":1,"overflow":1,"total_count":4,"total_sum":555}
+
+# Partial snapshots: a layout field or count without the rest.
+reject {"schema":1}
+reject {"lowest_trackable":10}
+reject {"counts":[0]}
+reject {"zero_count":1}
+reject {"total_count":1}
+
+# Unknown fields, including the pre-snake_case field names.
+reject {"schema":1,"lowest_trackable":10,"highest_trackable":100,"counts":[0,0,0,0,0,1,0,0],"zero_count":1,"underflow":1,"overflow":1,"total_count":4,"total_sum":555,"extra":0}
+reject {"PrometheusSchema":1,"LowestTrackable":10,"HighestTrackable":100,"Counts":[0,0,0,0,0,1,0,0],"ZeroCount":1,"Underflow":1,"Overflow":1,"TotalCount":4,"TotalSum":555}
+
+# Counts must be non-negative integers.
+reject {"schema":1,"lowest_trackable":10,"highest_trackable":100,"counts":[0,0,0,0,0,-1,0,0],"zero_count":1,"underflow":1,"overflow":1,"total_count":2,"total_sum":555}
+reject {"schema":1,"lowest_trackable":10,"highest_trackable":100,"counts":[0,0,0,0,0,1.5,0,0],"zero_count":1,"underflow":1,"overflow":1,"total_count":4,"total_sum":555}

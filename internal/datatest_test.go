@@ -9,11 +9,13 @@
 package internal
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"math"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -130,10 +132,12 @@ type golden struct {
 	underflow uint64
 	overflow  uint64
 	quantiles []goldenQuantile
+	// snapshotJSON is the snapshot as Go encodes it.
+	snapshotJSON string
 }
 
 // goldenScalars are the keys that must each appear exactly once in a golden.
-var goldenScalars = []string{"sum", "count", "schema", "zero_count", "underflow", "overflow"}
+var goldenScalars = []string{"sum", "count", "schema", "zero_count", "underflow", "overflow", "snapshot_json"}
 
 // parseGolden reads the generated golden section back into structured values.
 // It requires every scalar line exactly once and the quantile set to equal
@@ -185,6 +189,9 @@ func parseGolden(t *testing.T, body string) golden {
 		case key == metricName+"_sum":
 			g.sum = mustInt(t, fields[1])
 			seen["sum"]++
+		case key == "snapshot_json":
+			g.snapshotJSON = fields[1]
+			seen["snapshot_json"]++
 		default:
 			t.Fatalf("unexpected golden line %q", line)
 		}
@@ -266,6 +273,29 @@ func compareToGolden(t *testing.T, snap *Snapshot, exp golden) {
 			t.Errorf("quantile q=%g: got %g, golden %g", q.q, got, q.v)
 		}
 	}
+
+	// Go's own encoding must match the golden text exactly, so the format
+	// can't drift. Decoding the golden must reproduce the snapshot and its
+	// quantiles; this is the check other implementations replicate.
+	encoded, err := json.Marshal(snap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(encoded) != exp.snapshotJSON {
+		t.Errorf("snapshot_json:\n got    %s\n golden %s", encoded, exp.snapshotJSON)
+	}
+	var decoded Snapshot
+	if err := json.Unmarshal([]byte(exp.snapshotJSON), &decoded); err != nil {
+		t.Fatalf("decoding golden snapshot_json: %v", err)
+	}
+	if !reflect.DeepEqual(decoded, *snap) {
+		t.Errorf("decoded snapshot_json %+v does not equal live snapshot %+v", decoded, *snap)
+	}
+	for _, q := range exp.quantiles {
+		if got := decoded.ValueAtQuantile(q.q); !closeEnough(got, q.v, quantileRelTol) {
+			t.Errorf("decoded snapshot quantile q=%g: got %g, golden %g", q.q, got, q.v)
+		}
+	}
 }
 
 // closeEnough reports whether a and b are equal within a relative tolerance,
@@ -334,6 +364,11 @@ func generateGolden(in datatestInput) string {
 			strconv.FormatFloat(q, 'g', -1, 64),
 			strconv.FormatFloat(snap.ValueAtQuantile(q), 'g', -1, 64))
 	}
+	encoded, err := json.Marshal(snap)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Fprintf(&b, "snapshot_json %s\n", encoded)
 	return b.String()
 }
 

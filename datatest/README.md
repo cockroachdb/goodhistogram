@@ -7,9 +7,9 @@ other implementations can replay the same scenarios and compare their results.
 Each `*.txt` file is a self-contained scenario with two sections. The first is
 hand-authored input containing histogram parameters and recorded values. The
 second is generated output containing the classic Prometheus buckets, count,
-sum, schema, the zero/underflow/overflow counters, and representative
-quantiles. Every scalar line appears exactly once, and the quantile lines cover
-the same fixed set of quantiles in every file.
+sum, schema, the zero/underflow/overflow counters, representative quantiles,
+and the snapshot's JSON encoding. Every scalar line appears exactly once, and
+the quantile lines cover the same fixed set of quantiles in every file.
 
 ```text
 lo 1000
@@ -30,6 +30,7 @@ underflow 0
 overflow 0
 quantile 0 1448.1546878700494
 ...
+snapshot_json {"schema":3,"lowest_trackable":1000,...,"total_sum":771500}
 ```
 
 The fixtures pin the classic `le`-bucket projection rather than the native
@@ -39,6 +40,28 @@ counters are pinned separately. Bucket counts, count, sum, schema, and the
 counters are exact.
 Bucket boundaries and quantiles use small relative tolerances to absorb
 last-bit floating-point differences across platforms and math libraries.
+
+## Snapshot JSON
+
+`snapshot_json` is the snapshot encoded as Go writes it: compact JSON with
+the snake_case fields `schema`, `lowest_trackable`, `highest_trackable`,
+`counts`, `zero_count`, `underflow`, `overflow`, `total_count`, and
+`total_sum`. Go checks its own encoding against this text byte for byte.
+Other implementations should compare by value instead, since float formatting
+differs across languages (`1e+16` and `1e16` are the same number):
+
+- **Read:** decode `snapshot_json` and reproduce the same buckets, counters,
+  and quantiles from the decoded snapshot.
+- **Write:** encoding the replayed snapshot and decoding it again must give
+  the same values as decoding `snapshot_json`.
+
+`snapshot_json.cases` is a hand-authored list of `accept` and `reject`
+payloads. An implementation must decode every accepted payload into a valid
+snapshot and refuse every rejected one: wrong bucket counts for the layout,
+inconsistent totals, invalid schemas or bounds, partial snapshots, unknown
+fields, and non-integer counts.
+
+## Regenerating
 
 To regenerate all scenario and preset goldens from the repository root:
 
