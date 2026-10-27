@@ -976,41 +976,35 @@ func TestPrometheusExport(t *testing.T) {
 	})
 
 	t.Run("native keys align with prometheus schema", func(t *testing.T) {
-		// Verify that the bucket keys produced by our export match what
-		// Prometheus would compute for the same values via promBucketKey,
-		// allowing off-by-one for values that land on a straddling entry
-		// in the lookup table (where we round up to the next bucket).
+		// The exported native buckets must hold exactly the counts that
+		// promBucketKey assigns. 1 equals Lo and is a bucket's upper edge, so
+		// it falls below the lowest bucket and is counted in Underflow.
 		h := New(Params{Lo: 1, Hi: 1e6, ErrorBound: 0.05})
 		schema := h.Schema()
 
-		// Record specific values and verify their keys.
 		testValues := []int64{1, 2, 4, 8, 16, 100, 1000, 10000, 100000, 999999}
+		want := make(map[int]uint64)
+		var wantUnderflow uint64
 		for _, v := range testValues {
 			h.Record(v)
-		}
-		snap := h.Snapshot()
-		ph := snap.ToPrometheusHistogram()
-
-		keys, counts := decodeDeltaCounts(ph.PositiveSpan, ph.PositiveDelta)
-
-		// Build a set of expected keys from promBucketKey, including
-		// key+1 for each value to account for the lookup table's
-		// round-up behavior at straddling boundaries.
-		expectedKeys := make(map[int]bool)
-		for _, v := range testValues {
-			k := promBucketKey(float64(v), schema)
-			expectedKeys[k] = true
-			expectedKeys[k+1] = true
-		}
-
-		// Every key with count > 0 in the export should be in the expected set.
-		for i, k := range keys {
-			if counts[i] > 0 {
-				require.Truef(t, expectedKeys[k],
-					"exported key %d (count=%d) not in expected set %v",
-					k, counts[i], expectedKeys)
+			if k := promBucketKey(float64(v), schema); k < h.cfg.minKey {
+				wantUnderflow++
+			} else {
+				want[k]++
 			}
 		}
+		snap := h.Snapshot()
+		require.Equal(t, wantUnderflow, snap.Underflow)
+
+		keys, counts := decodeDeltaCounts(snap.ToPrometheusHistogram().PositiveSpan,
+			snap.ToPrometheusHistogram().PositiveDelta)
+		got := make(map[int]uint64)
+		for i, k := range keys {
+			if counts[i] > 0 {
+				got[k] = counts[i]
+			}
+		}
+		require.Equal(t, want, got)
 	})
 
 	t.Run("negative deltas are valid", func(t *testing.T) {

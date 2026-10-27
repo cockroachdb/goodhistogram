@@ -108,12 +108,14 @@ func getLe(key int, schema int32) float64 {
 	return math.Ldexp(frac, exp)
 }
 
-// bucketLookupBits is the number of top mantissa bits used to index
-// the bucket lookup table. 8 bits → 256 entries, which is enough
-// precision for all schemas up to 8 (256 buckets per group).
-const bucketLookupBits = 8
+// bucketLookupBits is the number of top mantissa bits used to index the
+// bucket lookup table. Each entry must contain at most one bucket boundary so
+// that a single comparison resolves it exactly. The narrowest bucket in a
+// group is ~ln(2)/2^schema of the mantissa range, so schema 8 needs 9 bits.
+const bucketLookupBits = 9
 const bucketLookupSize = 1 << bucketLookupBits
 const bucketLookupShift = 52 - bucketLookupBits
+const mantissaMask = 1<<52 - 1
 
 // config holds the immutable parameters for a Histogram, computed at
 // construction time from the user-specified range and error bound.
@@ -124,8 +126,20 @@ type config struct {
 	numBuckets      int
 	bucketsPerGroup int
 	groupBounds     []float64
-	bucketLookup    [bucketLookupSize]uint8
+	bucketLookup    [bucketLookupSize]uint16
+	bucketEdge      [bucketLookupSize]uint64
 	boundaries      []float64
+}
+
+// subBucket returns the bucket index within the group for a positive
+// float64's bits, exactly matching promBucketKey.
+func (c *config) subBucket(bits uint64) int {
+	i := (bits >> bucketLookupShift) & (bucketLookupSize - 1)
+	sub := int(c.bucketLookup[i])
+	if bits&mantissaMask > c.bucketEdge[i] {
+		sub++
+	}
+	return sub
 }
 
 // bucketLayout computes the layout without allocating its derived tables.
@@ -162,36 +176,30 @@ func newConfig(lo, hi, desiredError float64) config {
 	groupBounds := nativeHistogramBounds[schema]
 	bucketsPerGroup := len(groupBounds)
 
-	// Build the bucket lookup table. For each of the 256 possible
-	// top-8-bit mantissa values, compute the bucket index within
-	// the group by evaluating promBucketKey on representative float64
-	// values.
-	//
-	// A single 8-bit entry can straddle a bucket boundary: the low
-	// 44 bits that were truncated may push the full-precision value
-	// into the next bucket. We detect straddling by checking both
-	// the minimum and maximum float64 representable by each table
-	// entry. When they disagree, we resolve to the upper key (keyMax).
-	// This matches SearchFloat64s's >= semantics and means straddling
-	// values always round up to the next bucket — at most one
-	// bucket of additional error for a small fraction of values.
-	//
-	// For the common schema 2 (γ-1 = 18.9% worst-case error), only 4 of
-	// 256 entries straddle, affecting ~0.4% of recorded values. The maximum
-	// additional error for those values is bounded by one bucket width
-	// (γ-1), but the impact on quantile estimation is negligible since
-	// the affected values are already near the boundary.
-	var bucketLookup [bucketLookupSize]uint8
+	// Build the bucket lookup table. Each entry covers the values whose top
+	// mantissa bits equal its index. bucketLookup holds the bucket of the
+	// entry's smallest value, and bucketEdge the mantissa bits of that
+	// bucket's upper bound. Since an entry contains at most one boundary,
+	// a value belongs to bucketLookup[i] if its mantissa is <= bucketEdge[i]
+	// and to the next bucket otherwise, which matches promBucketKey exactly.
+	var bucketLookup [bucketLookupSize]uint16
+	var bucketEdge [bucketLookupSize]uint64
 	for tableIdx := 0; tableIdx < bucketLookupSize; tableIdx++ {
 		minBits := uint64(1023)<<52 | uint64(tableIdx)<<bucketLookupShift
 		maxBits := minBits | (1<<bucketLookupShift - 1)
 		keyMin := promBucketKey(math.Float64frombits(minBits), schema)
 		keyMax := promBucketKey(math.Float64frombits(maxBits), schema)
-		if keyMin == keyMax {
-			bucketLookup[tableIdx] = uint8(keyMin)
+		if keyMax > keyMin+1 {
+			panic("goodhistogram: bucket lookup entry contains more than one boundary")
+		}
+		bucketLookup[tableIdx] = uint16(keyMin)
+		if keyMin < bucketsPerGroup {
+			// groupBounds are frexp fractions in [0.5, 1); doubling is exact
+			// and puts the bound in [1, 2), matching the entry's exponent.
+			bucketEdge[tableIdx] = math.Float64bits(groupBounds[keyMin]*2) & mantissaMask
 		} else {
-			// Straddling entry — round up to the next bucket.
-			bucketLookup[tableIdx] = uint8(keyMax)
+			// Every value in the entry is above the group's last bound.
+			bucketEdge[tableIdx] = mantissaMask
 		}
 	}
 
@@ -204,6 +212,7 @@ func newConfig(lo, hi, desiredError float64) config {
 		bucketsPerGroup: bucketsPerGroup,
 		groupBounds:     groupBounds,
 		bucketLookup:    bucketLookup,
+		bucketEdge:      bucketEdge,
 		boundaries:      boundaries,
 	}
 }
@@ -379,11 +388,11 @@ func (h *Histogram) init(p Params) {
 // no allocations. Values <= 0 are counted in ZeroCount. Values outside [lo, hi]
 // are clamped and counted in Underflow/Overflow respectively.
 //
-// Bucket index is computed via math.Frexp (IEEE 754 bit extraction) plus a
-// precomputed lookup table indexed by the top mantissa bits. This
-// produces indices exactly aligned with Prometheus native histogram bucket
-// keys, avoiding the floating-point rounding drift that a math.Log-based
-// approach would introduce.
+// Bucket index is computed via IEEE 754 bit extraction plus a precomputed
+// lookup table indexed by the top mantissa bits and one comparison against
+// the entry's bucket boundary. This produces indices exactly equal to
+// Prometheus native histogram bucket keys, avoiding the floating-point
+// rounding drift that a math.Log-based approach would introduce.
 func (h *Histogram) Record(v int64) {
 	h.sum.Add(v)
 
@@ -397,9 +406,7 @@ func (h *Histogram) Record(v int64) {
 	// zero-cost reinterpret.
 	bits := math.Float64bits(float64(v))
 	exp := int(bits>>52) - 1022
-	sub := int(h.cfg.bucketLookup[(bits>>bucketLookupShift)&0xFF])
-
-	key := sub + (exp-1)*h.cfg.bucketsPerGroup
+	key := h.cfg.subBucket(bits) + (exp-1)*h.cfg.bucketsPerGroup
 	idx := key - h.cfg.minKey
 
 	// Clamp to valid range. Values outside [lo, hi] are counted in
