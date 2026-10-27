@@ -202,12 +202,16 @@ where *gamma* = 2^(2^(-*s*)). See [Error bounds](#error-bounds) for why the
 bound is *gamma* - 1 rather than the (*gamma* - 1)/(*gamma* + 1) figure used by
 DDSketch.
 
-At construction, a fixed array of `atomic.Uint64` counters is allocated
-covering the range `[Lo, Hi]`. The number of buckets is determined by
-the Prometheus bucket keys of `Lo` and `Hi`:
+At construction, a fixed array of `atomic.Uint64` counters is allocated, one
+per Prometheus bucket from the lowest to the highest. `Lo` and `Hi` select
+those buckets and behave like a Prometheus bucket's bounds: `Lo` is exclusive
+and `Hi` inclusive, so the lowest bucket holds values just above `Lo` and the
+highest holds `Hi`. Values outside those buckets are counted in `Underflow` and
+`Overflow`, and estimates use the buckets' real edges rather than `Lo` or `Hi`.
 
 ```
-numBuckets = promBucketKey(Hi, schema) - promBucketKey(Lo, schema) + 1
+minKey     = promBucketKey(Lo, schema), plus one if Lo is exactly that bucket's upper edge
+numBuckets = promBucketKey(Hi, schema) - minKey + 1
 ```
 
 ### Recording (the hot path)
