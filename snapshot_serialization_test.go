@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -186,15 +187,15 @@ func TestSnapshotZeroValue(t *testing.T) {
 	})
 	t.Run("empty counts", func(t *testing.T) {
 		var decoded Snapshot
-		require.NoError(t, json.Unmarshal([]byte(`{"Counts":[]}`), &decoded))
+		require.NoError(t, json.Unmarshal([]byte(`{"counts":[]}`), &decoded))
 		require.NoError(t, decoded.Validate())
 		require.Equal(t, zero.ToPrometheusHistogram(), decoded.ToPrometheusHistogram())
 	})
 	t.Run("partial snapshots remain invalid", func(t *testing.T) {
 		for _, payload := range []string{
-			`{"PrometheusSchema":1}`, `{"LowestTrackable":1}`, `{"HighestTrackable":100}`,
-			`{"Counts":[0]}`, `{"ZeroCount":1}`, `{"Underflow":1}`, `{"Overflow":1}`,
-			`{"TotalCount":1}`, `{"TotalSum":1}`,
+			`{"schema":1}`, `{"lowest_trackable":1}`, `{"highest_trackable":100}`,
+			`{"counts":[0]}`, `{"zero_count":1}`, `{"underflow":1}`, `{"overflow":1}`,
+			`{"total_count":1}`, `{"total_sum":1}`,
 		} {
 			t.Run(payload, func(t *testing.T) {
 				var decoded Snapshot
@@ -215,7 +216,7 @@ func TestSnapshotUnmarshalNull(t *testing.T) {
 		require.NoError(t, decoded.UnmarshalJSON([]byte(" \nnull\t")))
 		require.Equal(t, original, decoded)
 	}
-	for _, payload := range []string{`{"Min":1,"Max":2}`, `{"Snapshot":null,"Min":1,"Max":2}`} {
+	for _, payload := range []string{`{"min":1,"max":2}`, `{"snapshot":null,"min":1,"max":2}`} {
 		var decoded ExactSnapshot
 		require.NoError(t, json.Unmarshal([]byte(payload), &decoded))
 		require.Equal(t, ExactSnapshot{Min: 1, Max: 2}, decoded)
@@ -258,7 +259,7 @@ func TestSnapshotArithmeticWithUnset(t *testing.T) {
 		h.Record(value)
 	}
 	want := h.Snapshot()
-	for _, payload := range []string{`{}`, `null`, `{"Counts":[]}`} {
+	for _, payload := range []string{`{}`, `null`, `{"counts":[]}`} {
 		t.Run(payload, func(t *testing.T) {
 			var unset Snapshot
 			require.NoError(t, json.Unmarshal([]byte(payload), &unset))
@@ -280,7 +281,7 @@ func TestSnapshotArithmeticWithUnset(t *testing.T) {
 }
 
 func TestExactSnapshotUnsetAccumulator(t *testing.T) {
-	for _, payload := range []string{`{}`, `{"Min":1,"Max":2}`, `{"Snapshot":null,"Min":1,"Max":2}`} {
+	for _, payload := range []string{`{}`, `{"min":1,"max":2}`, `{"snapshot":null,"min":1,"max":2}`} {
 		t.Run(payload, func(t *testing.T) {
 			h := NewWithExactMinMax(Params{Lo: 10, Hi: 100, ErrorBound: 0.5})
 			h.Record(50)
@@ -349,4 +350,43 @@ func histogramFromSnapshotForTest(t *testing.T, s Snapshot) *Histogram {
 	h.sum.Store(s.TotalSum)
 	require.Equal(t, s.TotalCount, h.Snapshot().TotalCount)
 	return h
+}
+
+// The JSON field names are a cross-language format, so they are pinned here.
+func TestSnapshotJSONFormat(t *testing.T) {
+	h := New(Params{Lo: 10, Hi: 100, ErrorBound: 0.5})
+	for _, v := range []int64{0, 5, 50, 500} {
+		h.Record(v)
+	}
+	encoded, err := json.Marshal(h.Snapshot())
+	require.NoError(t, err)
+	require.Equal(t, `{"schema":1,"lowest_trackable":10,"highest_trackable":100,`+
+		`"counts":[0,0,0,0,0,1,0,0],"zero_count":1,"underflow":1,"overflow":1,`+
+		`"total_count":4,"total_sum":555}`, string(encoded))
+
+	exact := NewWithExactMinMax(Params{Lo: 10, Hi: 100, ErrorBound: 0.5})
+	exact.Record(50)
+	encoded, err = json.Marshal(exact.Snapshot())
+	require.NoError(t, err)
+	require.Contains(t, string(encoded), `"snapshot":{"schema":1,`)
+	require.Contains(t, string(encoded), `"min":50,"max":50}`)
+}
+
+func TestSnapshotJSONRejectsUnknownFields(t *testing.T) {
+	h := New(Params{Lo: 10, Hi: 100, ErrorBound: 0.5})
+	h.Record(50)
+	snap := h.Snapshot()
+	encoded, err := json.Marshal(snap)
+	require.NoError(t, err)
+	for _, payload := range []string{
+		// The pre-snake_case field names.
+		`{"PrometheusSchema":1,"LowestTrackable":10,"HighestTrackable":100,"Counts":[0,0,0,0,0,1,0,0],` +
+			`"ZeroCount":0,"Underflow":0,"Overflow":0,"TotalCount":1,"TotalSum":50}`,
+		strings.Replace(string(encoded), `"total_sum"`, `"total_sum":50,"extra"`, 1),
+	} {
+		var decoded Snapshot
+		require.ErrorContains(t, json.Unmarshal([]byte(payload), &decoded), "unknown field")
+	}
+	var decoded Snapshot
+	require.Error(t, decoded.UnmarshalJSON(append(encoded, []byte(` {}`)...)))
 }
