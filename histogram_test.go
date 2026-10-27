@@ -82,6 +82,58 @@ func TestResolutionPresets(t *testing.T) {
 	}
 }
 
+// Lo is exclusive and Hi inclusive, like Prometheus's (lower, upper] buckets:
+// the lowest bucket holds values just above Lo and the highest holds Hi. So
+// Record(Lo) underflows exactly when Lo is a bucket's upper edge (a power of
+// two), and otherwise lands in the lowest bucket.
+func TestLoExclusiveHiInclusive(t *testing.T) {
+	cases := map[string]struct {
+		p        Params
+		loOnEdge bool
+	}{
+		"Coarse":       {CoarseParams, true},
+		"Standard":     {StandardParams, true},
+		"Fine":         {FineParams, true},
+		"HiResLatency": {HiResLatencyParams, false},
+		"IOLatency":    {IOLatencyParams, false},
+		"ResponseTime": {ResponseTimeParams, false},
+		"LongRunning":  {LongRunningParams, false},
+		"DataSize":     {DataSizeParams, true},
+		"MemoryUsage":  {MemoryUsageParams, true},
+		"pow2 schema8": {Params{Lo: 1024, Hi: 4096, ErrorBound: schemaRelativeError(8)}, true},
+		"odd schema6":  {Params{Lo: 1000, Hi: 5000, ErrorBound: schemaRelativeError(6)}, false},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			p := tc.p
+			hi := int64(math.MaxInt64)
+			if p.Hi < float64(math.MaxInt64) {
+				hi = int64(p.Hi)
+			}
+			h := New(p)
+			// On an edge, the lowest bucket starts exactly at Lo; otherwise
+			// it starts below Lo.
+			if tc.loOnEdge {
+				require.Equal(t, p.Lo, h.cfg.bottom())
+			} else {
+				require.Less(t, h.cfg.bottom(), p.Lo)
+			}
+			h.Record(int64(p.Lo))
+			h.Record(hi)
+			snap := h.Snapshot()
+			if tc.loOnEdge {
+				require.Equal(t, uint64(1), snap.Underflow)
+				require.Zero(t, snap.Counts[0])
+			} else {
+				require.Zero(t, snap.Underflow)
+				require.Equal(t, uint64(1), snap.Counts[0])
+			}
+			require.Zero(t, snap.Overflow)
+			require.Equal(t, uint64(1), snap.Counts[len(snap.Counts)-1])
+		})
+	}
+}
+
 // A value above hi but inside hi's bucket is counted in range, so the export
 // and quantiles must report it against the bucket's real top edge, not hi.
 func TestValueAboveHiInHiBucket(t *testing.T) {
@@ -107,7 +159,10 @@ func TestNewConfig(t *testing.T) {
 		require.Equal(t, int32(4), cfg.schema) // 4.43% worst-case error
 		require.Greater(t, cfg.numBuckets, 0)
 		require.Equal(t, cfg.numBuckets+1, len(cfg.boundaries))
-		require.Equal(t, 1e4, cfg.boundaries[0])
+		// Lo only selects the lowest bucket, so the first boundary is that
+		// bucket's real lower edge rather than Lo.
+		require.Equal(t, getLe(promBucketKey(1e4, 4)-1, 4), cfg.boundaries[0])
+		require.Less(t, cfg.boundaries[0], 1e4)
 		// The last boundary is the top edge of hi's bucket.
 		require.Equal(t, getLe(promBucketKey(1e16, 4), 4), cfg.boundaries[cfg.numBuckets])
 		require.Greater(t, cfg.boundaries[cfg.numBuckets], 1e16)
@@ -384,8 +439,8 @@ func TestQuantileEdgeCases(t *testing.T) {
 			h.Record(i)
 		}
 		snap := h.Snapshot()
-		require.GreaterOrEqual(t, snap.ValueAtQuantile(0), 1.0)
-		require.LessOrEqual(t, snap.ValueAtQuantile(1.0), 1000.0)
+		require.GreaterOrEqual(t, snap.ValueAtQuantile(0), h.cfg.bottom())
+		require.LessOrEqual(t, snap.ValueAtQuantile(1.0), h.cfg.top())
 	})
 
 	t.Run("all zeros", func(t *testing.T) {
@@ -396,10 +451,10 @@ func TestQuantileEdgeCases(t *testing.T) {
 		snap := h.Snapshot()
 		require.Equal(t, uint64(100), snap.ZeroCount)
 		require.Equal(t, uint64(100), snap.TotalCount)
-		// All observations are zeros (below lo), so every quantile
-		// should clamp to lo.
-		require.Equal(t, 1.0, snap.ValueAtQuantile(0.50))
-		require.Equal(t, 1.0, snap.ValueAtQuantile(0.99))
+		// All observations are zeros (below the lowest bucket), so every
+		// quantile should clamp to the lowest bucket's lower edge.
+		require.Equal(t, h.cfg.bottom(), snap.ValueAtQuantile(0.50))
+		require.Equal(t, h.cfg.bottom(), snap.ValueAtQuantile(0.99))
 	})
 
 	t.Run("all underflow", func(t *testing.T) {
@@ -410,11 +465,14 @@ func TestQuantileEdgeCases(t *testing.T) {
 		snap := h.Snapshot()
 		require.Equal(t, uint64(50), snap.Underflow)
 		require.Equal(t, uint64(50), snap.TotalCount)
-		// Every quantile should clamp to lo, including p100.
-		require.Equal(t, 100.0, snap.ValueAtQuantile(0))
-		require.Equal(t, 100.0, snap.ValueAtQuantile(0.50))
-		require.Equal(t, 100.0, snap.ValueAtQuantile(0.99))
-		require.Equal(t, 100.0, snap.ValueAtQuantile(1.0))
+		// Every quantile should clamp to the lowest bucket's lower edge,
+		// including p100.
+		bottom := h.cfg.bottom()
+		require.Less(t, bottom, 100.0)
+		require.Equal(t, bottom, snap.ValueAtQuantile(0))
+		require.Equal(t, bottom, snap.ValueAtQuantile(0.50))
+		require.Equal(t, bottom, snap.ValueAtQuantile(0.99))
+		require.Equal(t, bottom, snap.ValueAtQuantile(1.0))
 	})
 
 	t.Run("all overflow", func(t *testing.T) {
@@ -449,8 +507,9 @@ func TestQuantileEdgeCases(t *testing.T) {
 		require.Equal(t, uint64(100), snap.TotalCount)
 
 		// p50 is at rank 50. With 80 underflow values, rank 50
-		// falls in the underflow region — should clamp to lo.
-		require.Equal(t, 100.0, snap.ValueAtQuantile(0.50))
+		// falls in the underflow region — should clamp to the lowest
+		// bucket's lower edge.
+		require.Equal(t, h.cfg.bottom(), snap.ValueAtQuantile(0.50))
 
 		// p90 is at rank 90. Past the 80 underflow values, it falls
 		// in the in-range buckets containing 500–519.
@@ -504,8 +563,9 @@ func TestQuantileEdgeCases(t *testing.T) {
 		require.Equal(t, uint64(100), snap.TotalCount)
 
 		// p10 is at rank 10, which falls at the boundary between
-		// zeros and underflow — should clamp to lo.
-		require.Equal(t, 100.0, snap.ValueAtQuantile(0.10))
+		// zeros and underflow — should clamp to the lowest bucket's lower
+		// edge.
+		require.Equal(t, h.cfg.bottom(), snap.ValueAtQuantile(0.10))
 
 		// p50 is at rank 50. With 20 sub-lo values (zeros +
 		// underflow), rank 50 falls in the in-range buckets.

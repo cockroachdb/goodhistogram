@@ -145,7 +145,9 @@ func (c *config) subBucket(bits uint64) int {
 // bucketLayout computes the layout without allocating its derived tables.
 func bucketLayout(lo, hi float64, schema int32) (minKey, numBuckets int) {
 	minKey = promBucketKey(lo, schema)
-	// Skip a zero-width first bucket when lo is exactly on a boundary.
+	// Lo is exclusive, like a Prometheus bucket's lower bound: the lowest
+	// bucket is the one holding values just above lo. When lo is exactly a
+	// bucket's upper edge, that is the next bucket up.
 	if getLe(minKey, schema) <= lo {
 		minKey++
 	}
@@ -163,12 +165,11 @@ func newConfig(lo, hi, desiredError float64) config {
 	schema := pickSchema(desiredError)
 	minKey, numBuckets := bucketLayout(lo, hi, schema)
 
-	// Precompute bucket boundaries for quantile estimation and export. The
-	// last boundary is the top edge of hi's bucket, not hi: Record counts
-	// values up to that edge in range, so the export must not claim they
-	// are <= hi.
+	// Precompute bucket boundaries for quantile estimation and export. These
+	// are the real edges of the buckets containing lo and hi and everything
+	// between; lo and hi themselves only select those buckets.
 	boundaries := make([]float64, numBuckets+1)
-	boundaries[0] = lo
+	boundaries[0] = getLe(minKey-1, schema)
 	for i := 1; i <= numBuckets; i++ {
 		boundaries[i] = getLe(minKey+i-1, schema)
 	}
@@ -224,8 +225,12 @@ func newConfig(lo, hi, desiredError float64) config {
 //   - Hi: math.MaxInt64
 //   - ErrorBound: 0.10 (10%, schema 3)
 type Params struct {
-	// Lo and Hi define the tracked value range. Values outside this range
-	// are counted in Underflow/Overflow.
+	// Lo and Hi select the lowest and highest buckets. Like a Prometheus
+	// bucket, Lo is exclusive and Hi inclusive: the lowest bucket holds values
+	// just above Lo, and the highest bucket holds Hi. Values below the lowest
+	// bucket (including Lo itself when it is a bucket's upper edge) or above
+	// the highest bucket are counted in Underflow/Overflow. Estimates use
+	// bucket edges, never Lo or Hi.
 	Lo, Hi float64
 	// ErrorBound is the maximum relative error bound. The histogram
 	// selects the tightest Prometheus schema whose error is at or below
@@ -329,6 +334,11 @@ func (p Params) withDefaults() Params {
 // array.
 var configCache sync.Map // map[Params]*config
 
+// bottom returns the lower edge of the lowest bucket.
+func (c *config) bottom() float64 {
+	return c.boundaries[0]
+}
+
 // top returns the upper edge of the highest bucket, which is the top edge of
 // hi's bucket.
 func (c *config) top() float64 {
@@ -350,7 +360,7 @@ func getOrCreateConfig(p Params) *config {
 type Histogram struct {
 	cfg    *config
 	counts []atomic.Uint64
-	// Underflow counts values below cfg.lo.
+	// Underflow counts values at or below the lowest bucket's lower edge.
 	Underflow atomic.Uint64
 	// Overflow counts values above the top edge of hi's bucket.
 	Overflow atomic.Uint64
@@ -385,8 +395,9 @@ func (h *Histogram) init(p Params) {
 }
 
 // Record adds a value to the histogram. This is the hot path: O(1), lock-free,
-// no allocations. Values <= 0 are counted in ZeroCount. Values outside [lo, hi]
-// are clamped and counted in Underflow/Overflow respectively.
+// no allocations. Values <= 0 are counted in ZeroCount. Values below the lowest
+// bucket or above the highest bucket are counted in Underflow/Overflow
+// respectively; see Params for how Lo and Hi select those buckets.
 //
 // Bucket index is computed via IEEE 754 bit extraction plus a precomputed
 // lookup table indexed by the top mantissa bits and one comparison against
@@ -409,12 +420,14 @@ func (h *Histogram) Record(v int64) {
 	key := h.cfg.subBucket(bits) + (exp-1)*h.cfg.bucketsPerGroup
 	idx := key - h.cfg.minKey
 
-	// Clamp to valid range. Values outside [lo, hi] are counted in
-	// Underflow/Overflow but are NOT added to any bucket. This matches
+	// Clamp to valid range. Values below the lowest bucket or above the
+	// highest are counted in Underflow/Overflow but are NOT added to any
+	// bucket. This matches
 	// the Prometheus convention where out-of-range values go to an
 	// implicit -Inf/+Inf bucket that is excluded from interpolation,
-	// and quantile estimation clamps to lo or the top edge of hi's bucket
-	// when the quantile falls in the underflow/overflow region.
+	// and quantile estimation clamps to the lowest bucket's lower edge or
+	// the highest bucket's upper edge when the quantile falls in the
+	// underflow/overflow region.
 	if idx < 0 {
 		h.Underflow.Add(1)
 		return
