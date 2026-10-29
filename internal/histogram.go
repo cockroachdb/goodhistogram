@@ -6,21 +6,9 @@
 //
 //     http://www.apache.org/licenses/LICENSE-2.0
 
-// Package goodhistogram provides an exponential histogram with Prometheus
-// native histogram schema alignment, bounded relative error, and trapezoidal
-// quantile estimation.
-//
-// The histogram is configured with a value range [lo, hi] and a desired
-// relative error bound. It selects the tightest Prometheus schema whose error
-// is at or below the requested bound, then allocates a fixed array of atomic
-// counters covering the range. Recording is O(1) and lock-free: values are
-// mapped to bucket indices via math.Frexp plus a small precomputed boundary
-// table, then the corresponding counter is atomically incremented.
-//
-// Because the bucket layout is identical to a Prometheus native histogram
-// schema, export to the Prometheus sparse format requires no remapping — our
-// internal indices are Prometheus bucket indices offset by a constant.
-package goodhistogram
+// Package internal implements goodhistogram; see the root package for
+// documentation.
+package internal
 
 import (
 	"fmt"
@@ -206,15 +194,11 @@ func newConfig(lo, hi, desiredError float64) config {
 	}
 }
 
-// Params holds the user-facing parameters for creating a Histogram.
-//
-// Zero-value fields are replaced with defaults:
-//   - Lo: 1
-//   - Hi: math.MaxInt64
-//   - ErrorBound: 0.10 (10%, schema 3)
+// Params is documented on goodhistogram.Params.
 type Params struct {
-	// Lo and Hi define the tracked value range. Values outside this range
-	// are counted in Underflow/Overflow.
+	// Lo and Hi select the lowest and highest buckets: the buckets that
+	// contain them. The tracked range widens to those buckets' edges; values
+	// below lo's bucket or above hi's bucket are counted in Underflow/Overflow.
 	Lo, Hi float64
 	// ErrorBound is the maximum relative error bound. The histogram
 	// selects the tightest Prometheus schema whose error is at or below
@@ -222,25 +206,18 @@ type Params struct {
 	ErrorBound float64
 }
 
-// Resolution presets cover the full range [1, math.MaxInt64] and differ only
-// in accuracy and memory — pick by the fidelity you need. Memory is the
-// per-histogram counts array; the config (boundaries, lookup table) is shared.
+// Presets are documented on goodhistogram.
 var (
-	// CoarseParams: schema 1, ~41.4% error, 126 buckets, ~1 KB/histogram.
 	CoarseParams = Params{
 		Lo:         1,
 		Hi:         float64(math.MaxInt64),
 		ErrorBound: schemaRelativeError(1),
 	}
-
-	// StandardParams: schema 2, ~18.9% error, 252 buckets, ~2 KB/histogram.
 	StandardParams = Params{
 		Lo:         1,
 		Hi:         float64(math.MaxInt64),
 		ErrorBound: schemaRelativeError(2),
 	}
-
-	// FineParams: schema 3, ~9.05% error, 504 buckets, ~4 KB/histogram.
 	FineParams = Params{
 		Lo:         1,
 		Hi:         float64(math.MaxInt64),
@@ -248,50 +225,28 @@ var (
 	}
 )
 
-// Common Params presets, modeled after the bucket tiers in CockroachDB's
-// pkg/util/metric/histogram_buckets.go and Prometheus DefBuckets.
-//
-// Time-based presets expect values in nanoseconds, matching Go's
-// time.Duration. Record with int64(duration).
+// Presets are documented on goodhistogram.
 var (
-	// HiResLatencyParams covers high-resolution latency from 1us to 5m.
-	// Use for: end-to-end request latencies where you need visibility into
-	// both fast-path sub-millisecond operations and slow tail outliers.
 	HiResLatencyParams = Params{
 		Lo: float64(time.Microsecond),
 		Hi: float64(5 * time.Minute),
 	}
-
-	// IOLatencyParams covers fast I/O operations from 10us to 10s.
-	// Use for: RPC latencies, raft operations, disk I/O, network round-trips.
 	IOLatencyParams = Params{
 		Lo: float64(10 * time.Microsecond),
 		Hi: float64(10 * time.Second),
 	}
-
-	// ResponseTimeParams covers request/response latencies from 1ms to 30s.
-	// Use for: SQL query execution, HTTP handlers, API response times.
 	ResponseTimeParams = Params{
 		Lo: float64(time.Millisecond),
 		Hi: float64(30 * time.Second),
 	}
-
-	// LongRunningParams covers long-running operations from 500ms to 1h.
-	// Use for: backups, restores, migrations, bulk ingestion jobs.
 	LongRunningParams = Params{
 		Lo: float64(500 * time.Millisecond),
 		Hi: float64(time.Hour),
 	}
-
-	// DataSizeParams covers data payload sizes from 1KB to 16MB (in bytes).
-	// Use for: message sizes, request/response bodies, SST sizes.
 	DataSizeParams = Params{
 		Lo: 1024,
 		Hi: 16 * 1024 * 1024,
 	}
-
-	// MemoryUsageParams covers memory tracking from 1B to 64MB (in bytes).
-	// Use for: memory allocations, buffer sizes, cache entry sizes.
 	MemoryUsageParams = Params{
 		Lo: 1,
 		Hi: 64 * 1024 * 1024,
@@ -329,7 +284,7 @@ func getOrCreateConfig(p Params) *config {
 	return actual.(*config)
 }
 
-// Histogram is a lock-free exponential histogram with atomic counters.
+// Histogram is documented on goodhistogram.Histogram.
 type Histogram struct {
 	cfg    *config
 	counts []atomic.Uint64
@@ -353,8 +308,7 @@ func (h *Histogram) Reset() {
 	h.sum.Store(0)
 }
 
-// New creates a new Histogram for the given range and error bound. Configs
-// are cached and shared across histograms with identical parameters.
+// New is documented on goodhistogram.New.
 func New(p Params) *Histogram {
 	h := &Histogram{}
 	h.init(p)
@@ -368,8 +322,9 @@ func (h *Histogram) init(p Params) {
 }
 
 // Record adds a value to the histogram. This is the hot path: O(1), lock-free,
-// no allocations. Values <= 0 are counted in ZeroCount. Values outside [lo, hi]
-// are clamped and counted in Underflow/Overflow respectively.
+// no allocations. Values <= 0 are counted in ZeroCount. The tracked range is
+// [lo, hi] widened to the edges of the buckets containing lo and hi; values
+// outside it are counted in Underflow/Overflow respectively.
 //
 // Bucket index is computed via math.Frexp (IEEE 754 bit extraction) plus a
 // precomputed lookup table indexed by the top mantissa bits. This
@@ -394,8 +349,9 @@ func (h *Histogram) Record(v int64) {
 	key := sub + (exp-1)*h.cfg.bucketsPerGroup
 	idx := key - h.cfg.minKey
 
-	// Clamp to valid range. Values outside [lo, hi] are counted in
-	// Underflow/Overflow but are NOT added to any bucket. This matches
+	// Clamp to valid range. Values in buckets below lo's bucket or above
+	// hi's bucket are counted in Underflow/Overflow but are NOT added to
+	// any bucket. This matches
 	// the Prometheus convention where out-of-range values go to an
 	// implicit -Inf/+Inf bucket that is excluded from interpolation,
 	// and quantile estimation clamps to lo/hi when the quantile falls
@@ -411,9 +367,7 @@ func (h *Histogram) Record(v int64) {
 	h.counts[idx].Add(1)
 }
 
-// Snapshot is a point-in-time, non-atomic copy of a Histogram, suitable for
-// quantile computation, export, and serialization.
-// The zero value represents an unset snapshot with no observations or layout.
+// Snapshot is documented on goodhistogram.Snapshot.
 type Snapshot struct {
 	// These fields define the bucket layout for Counts.
 	PrometheusSchema int32
