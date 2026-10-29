@@ -1,0 +1,107 @@
+# Managed by `roachdev codereview`: triggers roachdev's reusable AI PR review.
+name: Roachdev AI PR Review
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, ready_for_review]
+  # `/ai-review` PR comment: the only on-demand trigger that reviews a DRAFT
+  # without first marking it ready (which would notify human reviewers early).
+  issue_comment:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "PR number to review"
+        required: true
+        type: number
+
+# Dedupe only runs that will ACTUALLY review the PR. Concurrency is evaluated at
+# run creation, BEFORE the job `if`, so a run that the `if` later skips (a draft
+# PR event, a non-`/ai-review` comment, or a comment from a non-member) would
+# still enter a shared group and, with cancel-in-progress, kill an in-flight
+# review that nothing then replaces. To avoid that, the group predicate below
+# mirrors the job `if`: matching runs share `review-<PR>` (so a newer review of a
+# PR supersedes an older one), while every skippable run gets a unique
+# `review-noop-<run_id>` group and can never cancel an active review.
+# KEEP THIS PREDICATE IN SYNC WITH THE JOB `if` BELOW.
+concurrency:
+  group: >-
+    ${{
+      (
+        github.event_name == 'workflow_dispatch' ||
+        (github.event_name == 'pull_request_target' && (
+          github.event.action == 'ready_for_review' ||
+          ((github.event.action == 'opened' || github.event.action == 'synchronize') && !github.event.pull_request.draft))) ||
+        (github.event_name == 'issue_comment' &&
+          github.event.issue.pull_request != null &&
+          startsWith(github.event.comment.body, '/ai-review') &&
+          contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association))
+      )
+      && format('review-{0}', github.event.pull_request.number || github.event.issue.number || github.event.inputs.pr_number)
+      || format('review-noop-{0}', github.run_id)
+    }}
+  cancel-in-progress: true
+
+jobs:
+  # ack: react 👀 to a /ai-review command so the commenter gets immediate
+  # confirmation it registered. issue_comment runs do not appear in the PR checks
+  # box, so without this the command looks like it did nothing until the review
+  # finishes. Gated identically to the ai-review job's issue_comment branch. The
+  # reaction is best-effort (non-fatal): the review runs regardless.
+  ack:
+    if: >
+      github.event_name == 'issue_comment' &&
+      github.event.issue.pull_request != null &&
+      startsWith(github.event.comment.body, '/ai-review') &&
+      contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      # A /ai-review comment is a comment on a PR, so reacting to it via
+      # GITHUB_TOKEN needs pull-requests: write (GitHub scopes PR-timeline writes
+      # under pull-requests even though the REST path is /issues/comments/).
+      # issues: write is kept so the reaction also works on plain-issue comments.
+      pull-requests: write
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      COMMENT_ID: ${{ github.event.comment.id }}
+    steps:
+      - name: React 👀 to the /ai-review comment
+        run: |
+          gh api "repos/${REPO}/issues/comments/${COMMENT_ID}/reactions" \
+            --method POST -f content=eyes \
+            || echo "::warning::could not react to comment (non-fatal)"
+
+  ai-review:
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
+    # Run on: a manual dispatch; the usual non-draft PR events; or a `/ai-review`
+    # comment on a PR from someone with write access. The author-association gate
+    # (OWNER/MEMBER/COLLABORATOR) is SECURITY-CRITICAL: issue_comment runs from
+    # the base ref with repo secrets, so without it any drive-by commenter could
+    # spend a review. `github.event.issue.pull_request` is present only when the
+    # comment is on a PR (not a plain issue).
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request_target' && (
+        github.event.action == 'ready_for_review' ||
+        ((github.event.action == 'opened' || github.event.action == 'synchronize') && !github.event.pull_request.draft))) ||
+      (github.event_name == 'issue_comment' &&
+        github.event.issue.pull_request != null &&
+        startsWith(github.event.comment.body, '/ai-review') &&
+        contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association))
+    uses: cockroachlabs/roachdev/.github/workflows/ai-review.yml@main
+    with:
+      pr_number: ${{ fromJSON(github.event.inputs.pr_number || github.event.pull_request.number || github.event.issue.number) }}
+      # Codereview release channel (roachdev#1110): which roachdev release binary
+      # the review runs on. 'stable' (default) is the vetted fleet release; set
+      # 'canary' to trial the newest release on this repo, or an explicit
+      # roachdev release tag to pin. Promotion of stable happens centrally in
+      # roachdev's .github/codereview/channels.yml — no edit here is needed to
+      # ride it. See docs/ai-review-config.md ("Release channels").
+      channel: stable
+    secrets: inherit
