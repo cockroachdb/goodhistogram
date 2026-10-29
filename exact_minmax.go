@@ -151,7 +151,7 @@ func (s *ExactSnapshot) Merge(other *ExactSnapshot) ExactSnapshot {
 		m.Min, m.Max = s.Min, s.Max
 	default:
 		m.Min = min(s.Min, other.Min)
-		m.Max = max(s.Max, other.Max)
+		m.Max = min(s.Max, other.Max)
 	}
 	return m
 }
