@@ -202,12 +202,16 @@ where *gamma* = 2^(2^(-*s*)). See [Error bounds](#error-bounds) for why the
 bound is *gamma* - 1 rather than the (*gamma* - 1)/(*gamma* + 1) figure used by
 DDSketch.
 
-At construction, a fixed array of `atomic.Uint64` counters is allocated
-covering the range `[Lo, Hi]`. The number of buckets is determined by
-the Prometheus bucket keys of `Lo` and `Hi`:
+At construction, a fixed array of `atomic.Uint64` counters is allocated, one
+per Prometheus bucket from the lowest to the highest. `Lo` and `Hi` select
+those buckets and behave like a Prometheus bucket's bounds: `Lo` is exclusive
+and `Hi` inclusive, so the lowest bucket holds values just above `Lo` and the
+highest holds `Hi`. Values outside those buckets are counted in `Underflow` and
+`Overflow`, and estimates use the buckets' real edges rather than `Lo` or `Hi`.
 
 ```
-numBuckets = promBucketKey(Hi, schema) - promBucketKey(Lo, schema) + 1
+minKey     = promBucketKey(Lo, schema), plus one if Lo is exactly that bucket's upper edge
+numBuckets = promBucketKey(Hi, schema) - minKey + 1
 ```
 
 ### Recording (the hot path)
@@ -217,8 +221,9 @@ allocations:
 
 1. Convert to `float64` and extract the IEEE 754 bits.
 2. Compute the exponent from the biased exponent field: `exp = bits>>52 - 1022`.
-3. Look up the bucket index from a precomputed 256-entry table indexed by the
-   top 8 bits of the mantissa.
+3. Look up the bucket index from a precomputed 512-entry table indexed by the
+   top 9 bits of the mantissa. Each entry spans at most one bucket boundary,
+   so one comparison against that boundary gives the exact Prometheus bucket.
 4. Combine: `key = bucket + (exp-1) * bucketsPerGroup`, then
    `idx = key - minKey`.
 5. `counts[idx].Add(1)`.
@@ -275,19 +280,12 @@ modest amount of extra memory for a guarantee that holds.
 
 ### Sacrifices in Accuracy
 
-As a final note on the design, goodhistogram takes two tracks which
-theoretically affect quantile accuracy. The first is that it does not lock on
-snapshot, which means that snapshots can be inconsistent. Inconsistent in this
+As a final note on the design, goodhistogram takes one shortcut which
+theoretically affects quantile accuracy: it does not lock on snapshot, which
+means that snapshots can be inconsistent. Inconsistent in this
 case means that the `TotalSum` seen for the histogram can be greater than the sum
 of its parts. In practice, the likelihood of this is low enough, and the order
 of the effect small enough, that no detectable difference would be seen.
-
-Bucket lookup is imprecise as well. Because of the techniques used to make
-bucket lookup constant, ~0.45% of the samples will be incorrectly rounded to a
-neighboring bucket. The resulting distortion however is small (.02%) compared
-to the performance gains that it allows for. The distortions seen are similar
-to the ones seen in non-linear bucketing formats, which too optimize for lookup
-performance.
 
 ## Performance Notes
 
