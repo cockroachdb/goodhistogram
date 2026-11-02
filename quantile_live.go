@@ -65,7 +65,7 @@ func (h *Histogram) ValuesAtQuantilesInto(dst, qs []float64) []float64 {
 			if zeroCount+underflow > 0 {
 				dst[i] = cfg.lo
 			} else {
-				dst[i] = cfg.hi
+				dst[i] = cfg.top()
 				for j := 0; j < n; j++ {
 					if h.counts[j].Load() > 0 {
 						dst[i] = cfg.boundaries[j]
@@ -75,7 +75,7 @@ func (h *Histogram) ValuesAtQuantilesInto(dst, qs []float64) []float64 {
 			}
 		case rank >= fTotal:
 			if overflow > 0 {
-				dst[i] = cfg.hi
+				dst[i] = cfg.top()
 			} else {
 				dst[i] = cfg.lo
 				for j := n - 1; j >= 0; j-- {
@@ -88,7 +88,7 @@ func (h *Histogram) ValuesAtQuantilesInto(dst, qs []float64) []float64 {
 		case rank <= belowLo:
 			dst[i] = cfg.lo
 		case rank-belowLo > fInRange:
-			dst[i] = cfg.hi
+			dst[i] = cfg.top()
 		default:
 			if i < walkStart {
 				walkStart = i
