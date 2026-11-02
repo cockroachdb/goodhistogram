@@ -38,7 +38,7 @@ func (s *Snapshot) ValueAtQuantile(q float64) float64 {
 	if rank <= 0 {
 		// Return the lower bound of the first non-empty region.
 		if s.ZeroCount+s.Underflow > 0 {
-			return cfg.lo
+			return cfg.bottom()
 		}
 		for i, c := range s.Counts {
 			if c > 0 {
@@ -57,14 +57,15 @@ func (s *Snapshot) ValueAtQuantile(q float64) float64 {
 				return cfg.boundaries[i+1]
 			}
 		}
-		return cfg.lo
+		return cfg.bottom()
 	}
 
-	// Underflow and zero observations form an implicit region below lo.
-	// If the quantile falls within this region, clamp to lo.
+	// Underflow and zero observations form an implicit region below the
+	// lowest bucket. If the quantile falls within this region, clamp to its
+	// bottom edge.
 	belowLo := float64(s.ZeroCount + s.Underflow)
 	if rank <= belowLo {
-		return cfg.lo
+		return cfg.bottom()
 	}
 	// Adjust rank to be relative to the in-range buckets.
 	rank -= belowLo
@@ -163,7 +164,7 @@ func (s *Snapshot) ValuesAtQuantiles(qs []float64) []float64 {
 		rank := q * float64(s.TotalCount)
 		if rank <= 0 {
 			if s.ZeroCount+s.Underflow > 0 {
-				results[i] = cfg.lo
+				results[i] = cfg.bottom()
 			} else {
 				results[i] = cfg.top()
 				for j, c := range s.Counts {
@@ -179,7 +180,7 @@ func (s *Snapshot) ValuesAtQuantiles(qs []float64) []float64 {
 			if s.Overflow > 0 {
 				results[i] = cfg.top()
 			} else {
-				results[i] = cfg.lo
+				results[i] = cfg.bottom()
 				for j := len(s.Counts) - 1; j >= 0; j-- {
 					if s.Counts[j] > 0 {
 						results[i] = cfg.boundaries[j+1]
@@ -190,7 +191,7 @@ func (s *Snapshot) ValuesAtQuantiles(qs []float64) []float64 {
 			continue
 		}
 		if rank <= belowLo {
-			results[i] = cfg.lo
+			results[i] = cfg.bottom()
 			continue
 		}
 		adjusted := rank - belowLo

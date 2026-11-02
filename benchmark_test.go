@@ -486,6 +486,21 @@ func BenchmarkRecordSingleThread(b *testing.B) {
 	})
 }
 
+// BenchmarkRecordBySchema measures Record across schemas with log-uniform
+// values, so lookups are spread over every table entry.
+func BenchmarkRecordBySchema(b *testing.B) {
+	vals64 := makeInt64Values(rand.New(rand.NewSource(42)), 10000)
+	for _, schema := range []int32{2, 3, 6, 8} {
+		b.Run(fmt.Sprintf("schema=%d", schema), func(b *testing.B) {
+			h := New(Params{Lo: benchLo, Hi: benchHi, ErrorBound: schemaRelativeError(schema)})
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				h.Record(vals64[i%len(vals64)])
+			}
+		})
+	}
+}
+
 // --------------------------------------------------------------------------
 // 3. Speed Benchmarks — High Contention (50+ goroutines)
 // --------------------------------------------------------------------------

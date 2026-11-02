@@ -14,16 +14,57 @@ import (
 	"testing"
 )
 
+// TestBucketLookupExact checks the lookup table against promBucketKey at
+// every schema: at both ends of every table entry, on and next to every
+// bucket boundary, at powers of two, and at random values.
+func TestBucketLookupExact(t *testing.T) {
+	for schema := int32(0); schema <= 8; schema++ {
+		cfg := newConfig(1, 1<<40, schemaRelativeError(schema))
+		if cfg.schema != schema {
+			t.Fatalf("got schema %d, want %d", cfg.schema, schema)
+		}
+		check := func(v float64) {
+			t.Helper()
+			bits := math.Float64bits(v)
+			got := cfg.subBucket(bits) + (int(bits>>52)-1022-1)*cfg.bucketsPerGroup
+			if want := promBucketKey(v, schema); got != want {
+				t.Fatalf("schema %d v=%v: lookup key %d, prom key %d", schema, v, got, want)
+			}
+		}
+		for _, exp := range []int{0, 1, 10, 33} {
+			scale := math.Ldexp(1, exp)
+			for i := uint64(0); i < bucketLookupSize; i++ {
+				lo := math.Float64frombits(uint64(1023)<<52 | i<<bucketLookupShift)
+				hi := math.Float64frombits(math.Float64bits(lo) | (1<<bucketLookupShift - 1))
+				check(lo * scale)
+				check(hi * scale)
+			}
+			for _, b := range cfg.groupBounds {
+				edge := b * 2 * scale
+				check(edge)
+				check(math.Nextafter(edge, 0))
+				check(math.Nextafter(edge, math.Inf(1)))
+			}
+		}
+		for exp := 0; exp < 63; exp++ {
+			p := float64(int64(1) << exp)
+			check(p)
+			check(p + 1)
+			if exp > 0 {
+				check(p - 1)
+			}
+		}
+		rng := rand.New(rand.NewSource(int64(schema)))
+		for i := 0; i < 200000; i++ {
+			check(math.Exp(rng.Float64() * 40))
+		}
+	}
+}
+
 // TestBucketMappingConsistency compares the Record() path (which uses
 // the bucket lookup table for O(1) bucket resolution) against the
 // promBucketKey path (which uses math.Frexp + sort.SearchFloat64s).
-//
-// The lookup table uses 8 bits of mantissa, so ~4 of 256 entries per
-// schema may straddle a bucket boundary and resolve to the next
-// bucket. This test verifies that:
-//  1. Mismatches are bounded by the expected straddling rate (<2%).
-//  2. All mismatches differ by exactly 1 bucket (never more).
-//  3. The resulting quantile estimates remain accurate despite mismatches.
+// The two must agree exactly.
 func TestBucketMappingConsistency(t *testing.T) {
 	cfg := newConfig(500, 60e9, 0.10) // schema 2
 
@@ -32,7 +73,7 @@ func TestBucketMappingConsistency(t *testing.T) {
 		fv := float64(v)
 		bits := math.Float64bits(fv)
 		exp := int(bits>>52) - 1022
-		sub := int(cfg.bucketLookup[(bits>>bucketLookupShift)&0xFF])
+		sub := cfg.subBucket(bits)
 		key := sub + (exp-1)*cfg.bucketsPerGroup
 		idx := key - cfg.minKey
 		if idx < 0 {
@@ -56,9 +97,7 @@ func TestBucketMappingConsistency(t *testing.T) {
 		return idx
 	}
 
-	// Test random values across the range. Allow a small mismatch rate
-	// due to lookup table straddling, but require that all mismatches
-	// differ by at most 1 bucket.
+	// Test random values across the range.
 	rng := rand.New(rand.NewSource(42))
 	logLo := math.Log(500)
 	logHi := math.Log(60e9)
@@ -69,23 +108,18 @@ func TestBucketMappingConsistency(t *testing.T) {
 		if v <= 0 {
 			continue
 		}
-		refIdx := promBucketIndex(v)
-		recIdx := recordBucketIndex(v)
-		if refIdx != recIdx {
-			diff := recIdx - refIdx
-			if diff < -1 || diff > 1 {
-				t.Errorf("v=%d: ref=%d rec=%d (diff=%d exceeds 1)", v, refIdx, recIdx, diff)
+		if refIdx, recIdx := promBucketIndex(v), recordBucketIndex(v); refIdx != recIdx {
+			if mismatches < 10 {
+				t.Errorf("v=%d: ref=%d rec=%d", v, refIdx, recIdx)
 			}
 			mismatches++
 		}
 	}
-	mismatchRate := float64(mismatches) / float64(numSamples) * 100
-	t.Logf("Mismatches: %d / %d (%.2f%%)", mismatches, numSamples, mismatchRate)
-	if mismatchRate > 2.0 {
-		t.Errorf("Mismatch rate %.2f%% exceeds 2%% threshold", mismatchRate)
+	if mismatches > 0 {
+		t.Errorf("%d / %d values mapped to the wrong bucket", mismatches, numSamples)
 	}
 
-	// Verify that quantile estimates are close despite straddling.
+	// Verify that quantile estimates match the reference bucketing.
 	t.Run("full-histogram-comparison", func(t *testing.T) {
 		h := New(Params{Lo: 500, Hi: 60e9, ErrorBound: 0.10})
 
@@ -110,8 +144,6 @@ func TestBucketMappingConsistency(t *testing.T) {
 		}
 
 		// Compare quantile estimates between the two bucket distributions.
-		// They should be very close since mismatches shift values by at
-		// most one bucket width.
 		refSnap := Snapshot{
 			PrometheusSchema: cfg.schema,
 			LowestTrackable:  cfg.lo,
@@ -159,7 +191,7 @@ func TestBucketMappingConsistency(t *testing.T) {
 			for _, offset := range []float64{-1e-10, 0, 1e-10} {
 				testVal := boundary + offset
 				bits := math.Float64bits(testVal)
-				lookupIdx := int(cfg.bucketLookup[(bits>>bucketLookupShift)&0xFF])
+				lookupIdx := cfg.subBucket(bits)
 				oldKey := promBucketKey(testVal, cfg.schema)
 				newKey := lookupIdx + (int(bits>>52)-1022-1)*cfg.bucketsPerGroup
 
