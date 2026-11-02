@@ -14,6 +14,8 @@ import (
 )
 
 // UnmarshalJSON decodes and validates a Snapshot. JSON null leaves s unchanged.
+// Unknown fields are ignored so that newer writers can add optional fields. A
+// payload without a valid layout fails validation.
 func (s *Snapshot) UnmarshalJSON(data []byte) error {
 	if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
 		return nil

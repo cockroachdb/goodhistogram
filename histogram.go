@@ -442,20 +442,22 @@ func (h *Histogram) Record(v int64) {
 // Snapshot is a point-in-time, non-atomic copy of a Histogram, suitable for
 // quantile computation, export, and serialization.
 // The zero value represents an unset snapshot with no observations or layout.
+// In JSON, counts and total_sum are 64-bit integers encoded as numbers; readers
+// that parse JSON numbers as float64 (JavaScript, jq) lose precision above 2^53.
 type Snapshot struct {
 	// These fields define the bucket layout for Counts.
 	// LowestTrackable and HighestTrackable are the Lo and Hi the histogram
 	// was configured with. They define the layout, not the tracked range:
 	// the lowest and highest buckets can extend past them.
-	PrometheusSchema int32
-	LowestTrackable  float64
-	HighestTrackable float64
-	Counts           []uint64
-	ZeroCount        uint64
-	Underflow        uint64
-	Overflow         uint64
-	TotalCount       uint64
-	TotalSum         int64
+	PrometheusSchema int32    `json:"prometheus_schema"`
+	LowestTrackable  float64  `json:"lowest_trackable"`
+	HighestTrackable float64  `json:"highest_trackable"`
+	Counts           []uint64 `json:"counts"`
+	ZeroCount        uint64   `json:"zero_count"`
+	Underflow        uint64   `json:"underflow"`
+	Overflow         uint64   `json:"overflow"`
+	TotalCount       uint64   `json:"total_count"`
+	TotalSum         int64    `json:"total_sum"`
 }
 
 // Schema returns the Prometheus native histogram schema (0–8).
