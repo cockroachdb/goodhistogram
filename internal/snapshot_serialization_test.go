@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package goodhistogram
+package internal
 
 import (
 	"encoding/json"
@@ -115,6 +115,11 @@ func TestSnapshotValidation(t *testing.T) {
 		{"short counts", func(s *Snapshot) { s.Counts = s.Counts[:len(s.Counts)-1] }, "counts, expected"},
 		{"long counts", func(s *Snapshot) { s.Counts = append(s.Counts, 0) }, "counts, expected"},
 		{"incorrect total", func(s *Snapshot) { s.TotalCount++ }, "does not match component count"},
+		{"counts overflow", func(s *Snapshot) {
+			// Wrapping arithmetic would make the counts sum to TotalCount.
+			s.Counts[0] = math.MaxUint64
+			s.TotalCount--
+		}, "overflow uint64"},
 	}
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {

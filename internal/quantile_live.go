@@ -6,7 +6,7 @@
 //
 //     http://www.apache.org/licenses/LICENSE-2.0
 
-package goodhistogram
+package internal
 
 // ValuesAtQuantilesInto writes estimated values at the given quantiles into dst and
 // returns dst[:len(qs)]. It reads live atomic counters directly without

@@ -6,23 +6,14 @@
 //
 //     http://www.apache.org/licenses/LICENSE-2.0
 
-package goodhistogram
+package internal
 
 import (
 	"sync"
 	"time"
 )
 
-// Windowed is a histogram that supports both cumulative and windowed snapshots.
-// It maintains a single cumulative histogram and two baseline snapshots that
-// are rotated on a configurable interval. The windowed snapshot is computed by
-// subtracting the older baseline from the current cumulative state, providing
-// a view of recent activity spanning 1x-2x the window duration.
-//
-// Recording is identical in cost to a plain Histogram (~20ns): values are
-// atomically added to the single underlying histogram with no locking. The
-// mutex only protects baseline rotation, which happens lazily on
-// WindowedSnapshot() calls or explicitly via Tick().
+// Windowed is documented on goodhistogram.Windowed.
 type Windowed struct {
 	h        *Histogram    // cumulative — the only histogram, never swapped or reset
 	interval time.Duration // immutable after construction
@@ -35,9 +26,7 @@ type Windowed struct {
 	}
 }
 
-// NewWindowed creates a new Windowed histogram. The params configure the
-// bucket layout (same as New), and window is the rotation interval. Panics
-// if window <= 0.
+// NewWindowed is documented on goodhistogram.NewWindowed.
 func NewWindowed(p Params, window time.Duration) *Windowed {
 	if window <= 0 {
 		panic("goodhistogram: window must be > 0")

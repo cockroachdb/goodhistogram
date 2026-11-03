@@ -6,16 +6,14 @@
 //
 //     http://www.apache.org/licenses/LICENSE-2.0
 
-package goodhistogram
+package internal
 
 import (
 	"github.com/prometheus/client_golang/prometheus"
 	prometheusgo "github.com/prometheus/client_model/go"
 )
 
-// PrometheusCollector wraps a Histogram as a prometheus.Collector, allowing it
-// to be registered with a Prometheus registry for scraping. Recording is done
-// directly on the Histogram; the collector only participates in the export path.
+// PrometheusCollector is documented on goodhistogram.PrometheusCollector.
 type PrometheusCollector struct {
 	h    *Histogram
 	desc *prometheus.Desc
