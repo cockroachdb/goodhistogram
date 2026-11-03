@@ -855,6 +855,48 @@ func TestPrometheusExport(t *testing.T) {
 		require.Equal(t, uint64(4), ph.GetSampleCount())
 	})
 
+	t.Run("native buckets include out-of-range observations", func(t *testing.T) {
+		// Repro from #7: SampleCount must equal ZeroCount plus the sum of the
+		// native bucket counts, since there is no +Inf bucket to absorb the rest.
+		h := New(Params{Lo: 10e3, Hi: 10e9, ErrorBound: 0.12})
+		for i := 0; i < 1_000_000; i++ {
+			h.Record(500) // below Lo: underflow
+		}
+		for i := 0; i < 3000; i++ {
+			h.Record(50_000) // in range
+		}
+		for i := 0; i < 7; i++ {
+			h.Record(30_000_000_000) // above Hi: overflow
+		}
+		h.Record(0)
+		snap := h.Snapshot()
+		require.Equal(t, uint64(1_000_000), snap.Underflow)
+		require.Equal(t, uint64(7), snap.Overflow)
+		ph := snap.ToPrometheusHistogram()
+		cfg := snap.config()
+
+		keys, counts := decodeDeltaCounts(ph.PositiveSpan, ph.PositiveDelta)
+		total := ph.GetZeroCount()
+		for _, c := range counts {
+			total += c
+		}
+		require.Equal(t, ph.GetSampleCount(), total)
+
+		// Underflow is in the zero bucket, which now reaches the lowest
+		// bucket's lower edge.
+		require.Equal(t, uint64(1_000_001), ph.GetZeroCount())
+		require.Equal(t, cfg.bottom(), ph.GetZeroThreshold())
+
+		// Overflow is in the bucket right above the highest one.
+		require.Equal(t, cfg.minKey+cfg.numBuckets, keys[len(keys)-1])
+		require.Equal(t, uint64(7), counts[len(counts)-1])
+		require.Equal(t, cfg.top(), getLe(keys[len(keys)-1]-1, ph.GetSchema()))
+
+		// In-range buckets are unchanged.
+		require.Equal(t, uint64(3000), counts[0])
+		require.Len(t, counts, 2)
+	})
+
 	t.Run("conventional buckets include out-of-range observations", func(t *testing.T) {
 		h := New(Params{Lo: 100, Hi: 10000, ErrorBound: 0.05})
 		// 2 zeros, 3 underflow, 5 in-range, 4 overflow = 14 total.

@@ -10,6 +10,7 @@ package internal
 
 import (
 	"math"
+	"slices"
 
 	prometheusgo "github.com/prometheus/client_model/go"
 )
@@ -76,16 +77,33 @@ func (s *Snapshot) conventionalBuckets() []*prometheusgo.Bucket {
 // Because our bucket indices are Prometheus schema-aligned by construction,
 // the mapping from internal indices to Prometheus bucket keys is a simple
 // offset addition: promKey = internalIndex + config.minKey.
+//
+// A native histogram has no +Inf bucket, so every observation counted in
+// SampleCount has to land in the zero bucket or a positive bucket:
+//   - Underflow (0 < v <= bottom) goes in the zero bucket, whose threshold is
+//     widened to bottom. The first regular bucket starts just above bottom,
+//     so the two do not overlap.
+//   - Overflow (v > top) goes in the bucket right above the highest one,
+//     whose lower edge is top. Its upper edge understates values far
+//     above top, the same way the in-process quantiles clamp them to top.
 func (s *Snapshot) populateNativeFields(h *prometheusgo.Histogram) {
 	cfg := s.config()
 	schema := cfg.schema
 	h.Schema = &schema
 
-	// Zero bucket: values at or below zero.
+	// Zero bucket: values at or below zero, plus underflow if any.
 	zt := math.SmallestNonzeroFloat64
-	zc := s.ZeroCount
+	if s.Underflow > 0 {
+		zt = cfg.bottom()
+	}
+	zc := s.ZeroCount + s.Underflow
 	h.ZeroThreshold = &zt
 	h.ZeroCount = &zc
+
+	counts := s.Counts
+	if s.Overflow > 0 {
+		counts = append(slices.Clone(s.Counts), s.Overflow)
+	}
 
 	// Build positive spans and delta-encoded counts from the bucket array.
 	// We walk the array, grouping consecutive non-zero buckets into spans
@@ -98,7 +116,7 @@ func (s *Snapshot) populateNativeFields(h *prometheusgo.Histogram) {
 	inSpan := false
 	gapSinceLastSpan := 0
 
-	for i, c := range s.Counts {
+	for i, c := range counts {
 		if c > 0 {
 			if !inSpan {
 				// Start a new span.
