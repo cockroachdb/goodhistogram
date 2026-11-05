@@ -51,6 +51,11 @@ distributed systems.
 go get github.com/cockroachdb/goodhistogram
 ```
 
+The Go package is imported from the repository root, with its implementation
+in [`internal/`](internal/), and the Rust crate in
+[`rust/`](rust/); both are kept in lockstep by shared conformance fixtures
+(see [`datatest/README.md`](datatest/README.md)).
+
 ### Create and record
 
 ```go
