@@ -79,6 +79,16 @@ inconsistent totals, invalid schemas or bounds, partial snapshots, the old
 Go-named format, and non-integer counts. Payloads with unknown extra fields are
 accepted.
 
+## Implementations
+
+Go (`internal/datatest_test.go`, `internal/presets_test.go`) regenerates and
+checks the goldens. The Rust crate replays them in `rust/tests/datatest.rs` and
+`rust/tests/presets.rs` and never regenerates them, so a Go behavior change
+forces a `-rewrite`, and a Rust implementation that doesn't follow fails its
+suite against the committed goldens. The JSON parts of the contract
+(`snapshot_json` and `snapshot_json.cases`) apply to implementations that
+serialize snapshots; the Rust crate doesn't, so it skips them.
+
 ## Regenerating
 
 To regenerate all scenario and preset goldens from the repository root:

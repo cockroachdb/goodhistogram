@@ -33,7 +33,8 @@ import (
 // differences in the float math don't cause spurious failures.
 //
 // Other implementations can replay the same files to check that they match
-// the Go source of truth. See datatest/README.md.
+// the Go source of truth; the Rust crate does so in rust/tests/datatest.rs.
+// See datatest/README.md.
 //
 // Regenerate with:
 //
