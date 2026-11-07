@@ -882,19 +882,22 @@ func TestPrometheusExport(t *testing.T) {
 		}
 		require.Equal(t, ph.GetSampleCount(), total)
 
-		// Underflow is in the zero bucket, which now reaches the lowest
-		// bucket's lower edge.
-		require.Equal(t, uint64(1_000_001), ph.GetZeroCount())
-		require.Equal(t, cfg.bottom(), ph.GetZeroThreshold())
+		// Zeros stay alone in the zero bucket.
+		require.Equal(t, uint64(1), ph.GetZeroCount())
+		require.Equal(t, math.SmallestNonzeroFloat64, ph.GetZeroThreshold())
 
-		// Overflow is in the bucket right above the highest one.
+		// Underflow is in the bucket directly below the lowest bucket, and
+		// overflow in the bucket directly above the highest.
+		require.Equal(t, cfg.minKey-1, keys[0])
 		require.Equal(t, cfg.minKey+cfg.numBuckets, keys[len(keys)-1])
+		require.Equal(t, uint64(1_000_000), counts[0])
 		require.Equal(t, uint64(7), counts[len(counts)-1])
+		require.Equal(t, cfg.bottom(), getLe(keys[0], ph.GetSchema()))
 		require.Equal(t, cfg.top(), getLe(keys[len(keys)-1]-1, ph.GetSchema()))
 
 		// In-range buckets are unchanged.
-		require.Equal(t, uint64(3000), counts[0])
-		require.Len(t, counts, 2)
+		require.Equal(t, uint64(3000), counts[1])
+		require.Len(t, counts, 3)
 	})
 
 	t.Run("conventional buckets include out-of-range observations", func(t *testing.T) {
@@ -1097,7 +1100,8 @@ func TestPrometheusExport(t *testing.T) {
 	t.Run("native keys align with prometheus schema", func(t *testing.T) {
 		// The exported native buckets must hold exactly the counts that
 		// promBucketKey assigns. 1 equals Lo and is a bucket's upper edge, so
-		// it falls below the lowest bucket and is counted in Underflow.
+		// it falls below the lowest bucket, is counted in Underflow, and is
+		// exported in the bucket directly below the lowest one.
 		h := New(Params{Lo: 1, Hi: 1e6, ErrorBound: 0.05})
 		schema := h.Schema()
 
@@ -1106,11 +1110,12 @@ func TestPrometheusExport(t *testing.T) {
 		var wantUnderflow uint64
 		for _, v := range testValues {
 			h.Record(v)
-			if k := promBucketKey(float64(v), schema); k < h.cfg.minKey {
+			k := promBucketKey(float64(v), schema)
+			if k < h.cfg.minKey {
 				wantUnderflow++
-			} else {
-				want[k]++
+				k = h.cfg.minKey - 1
 			}
+			want[k]++
 		}
 		snap := h.Snapshot()
 		require.Equal(t, wantUnderflow, snap.Underflow)

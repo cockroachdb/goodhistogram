@@ -10,7 +10,6 @@ package internal
 
 import (
 	"math"
-	"slices"
 
 	prometheusgo "github.com/prometheus/client_model/go"
 )
@@ -79,31 +78,31 @@ func (s *Snapshot) conventionalBuckets() []*prometheusgo.Bucket {
 // offset addition: promKey = internalIndex + config.minKey.
 //
 // A native histogram has no +Inf bucket, so every observation counted in
-// SampleCount has to land in the zero bucket or a positive bucket:
-//   - Underflow (0 < v <= bottom) goes in the zero bucket, whose threshold is
-//     widened to bottom. The first regular bucket starts just above bottom,
-//     so the two do not overlap.
-//   - Overflow (v > top) goes in the bucket right above the highest one,
-//     whose lower edge is top. Its upper edge understates values far
-//     above top, the same way the in-process quantiles clamp them to top.
+// SampleCount has to land in the zero bucket or a positive bucket. Underflow
+// and overflow go just outside the configured buckets, at the configured
+// resolution: underflow in the bucket directly below the lowest bucket (key
+// minKey-1) and overflow in the bucket directly above the highest (key
+// minKey+numBuckets). Values far outside the range are only approximated by
+// those buckets, just as the in-process quantiles clamp them to the range's
+// edges.
 func (s *Snapshot) populateNativeFields(h *prometheusgo.Histogram) {
 	cfg := s.config()
 	schema := cfg.schema
 	h.Schema = &schema
 
-	// Zero bucket: values at or below zero, plus underflow if any.
+	// Zero bucket: values at or below zero.
 	zt := math.SmallestNonzeroFloat64
-	if s.Underflow > 0 {
-		zt = cfg.bottom()
-	}
-	zc := s.ZeroCount + s.Underflow
+	zc := s.ZeroCount
 	h.ZeroThreshold = &zt
 	h.ZeroCount = &zc
 
-	counts := s.Counts
-	if s.Overflow > 0 {
-		counts = append(slices.Clone(s.Counts), s.Overflow)
-	}
+	// Pad the bucket array with the underflow and overflow buckets on either
+	// side. Empty ones are skipped below like any other empty bucket.
+	counts := make([]uint64, 0, len(s.Counts)+2)
+	counts = append(counts, s.Underflow)
+	counts = append(counts, s.Counts...)
+	counts = append(counts, s.Overflow)
+	firstKey := cfg.minKey - 1
 
 	// Build positive spans and delta-encoded counts from the bucket array.
 	// We walk the array, grouping consecutive non-zero buckets into spans
@@ -123,7 +122,7 @@ func (s *Snapshot) populateNativeFields(h *prometheusgo.Histogram) {
 				var offset int32
 				if len(spans) == 0 {
 					// First span: offset is the absolute Prometheus bucket key.
-					offset = int32(cfg.minKey + i)
+					offset = int32(firstKey + i)
 				} else {
 					// Subsequent spans: offset is the gap since the previous span ended.
 					offset = int32(gapSinceLastSpan)

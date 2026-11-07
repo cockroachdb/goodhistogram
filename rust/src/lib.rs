@@ -682,9 +682,10 @@ impl<'a> Snapshot<'a> {
 /// The native (sparse) Prometheus histogram encoding of a [`Snapshot`],
 /// matching the Go implementation's export.
 ///
-/// It carries zeros (in the zero bucket) and the in-range buckets only.
-/// Underflow and overflow have no native bucket, so they appear only in the
-/// sample count ([`Snapshot::total_count`]).
+/// It carries zeros in the zero bucket and the in-range buckets. Underflow
+/// goes in the bucket directly below the lowest bucket and overflow in the
+/// bucket directly above the highest, so the bucket counts plus the zero count
+/// equal the sample count ([`Snapshot::total_count`]).
 #[derive(Debug, Clone, PartialEq)]
 pub struct NativeHistogram {
     /// Prometheus native histogram schema (0–8).
@@ -706,14 +707,21 @@ pub struct NativeHistogram {
 impl Snapshot<'_> {
     /// Returns the native (sparse) Prometheus histogram encoding: consecutive
     /// non-empty buckets are grouped into spans separated by gaps of empty
-    /// buckets, and counts are delta-encoded.
+    /// buckets, and counts are delta-encoded. Underflow and overflow are
+    /// exported in the buckets directly below the lowest and directly above
+    /// the highest bucket.
     pub fn native(&self) -> NativeHistogram {
         let mut spans: Vec<(i32, u32)> = Vec::new();
         let mut deltas = Vec::new();
         let mut in_span = false;
         let mut gap = 0i32;
         let mut prev = 0i64;
-        for (i, &c) in self.counts.iter().enumerate() {
+        // Pad the buckets with underflow and overflow on either side; empty
+        // ones are skipped like any other empty bucket.
+        let counts = std::iter::once(self.underflow)
+            .chain(self.counts.iter().copied())
+            .chain(std::iter::once(self.overflow));
+        for (i, c) in counts.enumerate() {
             if c == 0 {
                 if in_span {
                     in_span = false;
@@ -725,7 +733,7 @@ impl Snapshot<'_> {
             }
             if !in_span {
                 let offset = if spans.is_empty() {
-                    self.min_key + i as i32
+                    self.min_key - 1 + i as i32
                 } else {
                     gap
                 };

@@ -103,8 +103,8 @@ underflow 5
 overflow 0
 native_zero_threshold 5e-324
 native_zero_count 0
-native_spans 80:1
-native_deltas 1
+native_spans 79:2
+native_deltas 5 -4
 quantile 0 939.0121402415833
 quantile 0.25 939.0121402415833
 quantile 0.5 939.0121402415833
