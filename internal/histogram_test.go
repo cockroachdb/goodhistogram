@@ -855,6 +855,51 @@ func TestPrometheusExport(t *testing.T) {
 		require.Equal(t, uint64(4), ph.GetSampleCount())
 	})
 
+	t.Run("native buckets include out-of-range observations", func(t *testing.T) {
+		// Repro from #7: SampleCount must equal ZeroCount plus the sum of the
+		// native bucket counts, since there is no +Inf bucket to absorb the rest.
+		h := New(Params{Lo: 10e3, Hi: 10e9, ErrorBound: 0.12})
+		for i := 0; i < 1_000_000; i++ {
+			h.Record(500) // below Lo: underflow
+		}
+		for i := 0; i < 3000; i++ {
+			h.Record(50_000) // in range
+		}
+		for i := 0; i < 7; i++ {
+			h.Record(30_000_000_000) // above Hi: overflow
+		}
+		h.Record(0)
+		snap := h.Snapshot()
+		require.Equal(t, uint64(1_000_000), snap.Underflow)
+		require.Equal(t, uint64(7), snap.Overflow)
+		ph := snap.ToPrometheusHistogram()
+		cfg := snap.config()
+
+		keys, counts := decodeDeltaCounts(ph.PositiveSpan, ph.PositiveDelta)
+		total := ph.GetZeroCount()
+		for _, c := range counts {
+			total += c
+		}
+		require.Equal(t, ph.GetSampleCount(), total)
+
+		// Zeros stay alone in the zero bucket.
+		require.Equal(t, uint64(1), ph.GetZeroCount())
+		require.Equal(t, math.SmallestNonzeroFloat64, ph.GetZeroThreshold())
+
+		// Underflow is in the bucket directly below the lowest bucket, and
+		// overflow in the bucket directly above the highest.
+		require.Equal(t, cfg.minKey-1, keys[0])
+		require.Equal(t, cfg.minKey+cfg.numBuckets, keys[len(keys)-1])
+		require.Equal(t, uint64(1_000_000), counts[0])
+		require.Equal(t, uint64(7), counts[len(counts)-1])
+		require.Equal(t, cfg.bottom(), getLe(keys[0], ph.GetSchema()))
+		require.Equal(t, cfg.top(), getLe(keys[len(keys)-1]-1, ph.GetSchema()))
+
+		// In-range buckets are unchanged.
+		require.Equal(t, uint64(3000), counts[1])
+		require.Len(t, counts, 3)
+	})
+
 	t.Run("conventional buckets include out-of-range observations", func(t *testing.T) {
 		h := New(Params{Lo: 100, Hi: 10000, ErrorBound: 0.05})
 		// 2 zeros, 3 underflow, 5 in-range, 4 overflow = 14 total.
@@ -1055,7 +1100,8 @@ func TestPrometheusExport(t *testing.T) {
 	t.Run("native keys align with prometheus schema", func(t *testing.T) {
 		// The exported native buckets must hold exactly the counts that
 		// promBucketKey assigns. 1 equals Lo and is a bucket's upper edge, so
-		// it falls below the lowest bucket and is counted in Underflow.
+		// it falls below the lowest bucket, is counted in Underflow, and is
+		// exported in the bucket directly below the lowest one.
 		h := New(Params{Lo: 1, Hi: 1e6, ErrorBound: 0.05})
 		schema := h.Schema()
 
@@ -1064,11 +1110,12 @@ func TestPrometheusExport(t *testing.T) {
 		var wantUnderflow uint64
 		for _, v := range testValues {
 			h.Record(v)
-			if k := promBucketKey(float64(v), schema); k < h.cfg.minKey {
+			k := promBucketKey(float64(v), schema)
+			if k < h.cfg.minKey {
 				wantUnderflow++
-			} else {
-				want[k]++
+				k = h.cfg.minKey - 1
 			}
+			want[k]++
 		}
 		snap := h.Snapshot()
 		require.Equal(t, wantUnderflow, snap.Underflow)

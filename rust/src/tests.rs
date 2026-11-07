@@ -806,13 +806,12 @@ fn test_native_export() {
     });
     let bounds = native_histogram_bounds(h.schema());
     let key = |v: f64| prom_bucket_key(v, h.schema(), &bounds);
-    // Two adjacent buckets, a gap, then one more; plus a zero and an overflow,
-    // which have no native bucket other than the zero bucket.
+    // Two adjacent buckets, a gap, then one more; plus a zero, which goes in
+    // the zero bucket.
     for v in [100, 100, 150, 5000] {
         h.record(v);
     }
     h.record(0);
-    h.record(10_000_000);
     assert_eq!(key(150.0), key(100.0) + 1);
     let native = h.snapshot().native();
     assert_eq!(native.schema, h.schema());
@@ -823,6 +822,52 @@ fn test_native_export() {
         vec![(key(100.0), 2), (key(5000.0) - key(150.0) - 1, 1)]
     );
     assert_eq!(native.positive_deltas, vec![2, -1, 0]);
+}
+
+#[test]
+fn test_native_export_out_of_range() {
+    // A native histogram has no +Inf bucket, so underflow goes in the bucket
+    // directly below the lowest bucket and overflow in the bucket directly
+    // above the highest, keeping the bucket counts plus the zero count equal
+    // to the sample count.
+    let h = Histogram::new(Params {
+        lo: 1000.0,
+        hi: 1e6,
+        error_bound: 0.1,
+    });
+    let bounds = native_histogram_bounds(h.schema());
+    let key = |v: f64| prom_bucket_key(v, h.schema(), &bounds);
+    for _ in 0..5 {
+        h.record(1); // underflow
+    }
+    h.record(5000);
+    for _ in 0..3 {
+        h.record(10_000_000); // overflow
+    }
+    h.record(0);
+    let snap = h.snapshot();
+    assert_eq!((snap.underflow, snap.overflow), (5, 3));
+    let native = snap.native();
+    assert_eq!(native.zero_threshold, f64::MIN_POSITIVE * f64::EPSILON);
+    assert_eq!(native.zero_count, 1);
+
+    let below = snap.min_key - 1;
+    let above = snap.min_key + snap.counts.len() as i32;
+    assert_eq!(
+        native.positive_spans,
+        vec![
+            (below, 1),
+            (key(5000.0) - below - 1, 1),
+            (above - key(5000.0) - 1, 1)
+        ]
+    );
+    assert_eq!(native.positive_deltas, vec![5, -4, 2]);
+    // The lowest bucket's lower edge is the top of the underflow bucket, and
+    // the overflow bucket starts at the highest bucket's upper edge.
+    let b = snap.boundaries();
+    assert_eq!(key(b[0]), below);
+    assert_eq!(key(b[b.len() - 1]) + 1, above);
+    assert_eq!(native.zero_count + 5 + 1 + 3, snap.total_count);
 }
 
 #[test]

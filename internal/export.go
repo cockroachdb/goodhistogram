@@ -76,6 +76,15 @@ func (s *Snapshot) conventionalBuckets() []*prometheusgo.Bucket {
 // Because our bucket indices are Prometheus schema-aligned by construction,
 // the mapping from internal indices to Prometheus bucket keys is a simple
 // offset addition: promKey = internalIndex + config.minKey.
+//
+// A native histogram has no +Inf bucket, so every observation counted in
+// SampleCount has to land in the zero bucket or a positive bucket. Underflow
+// and overflow go just outside the configured buckets, at the configured
+// resolution: underflow in the bucket directly below the lowest bucket (key
+// minKey-1) and overflow in the bucket directly above the highest (key
+// minKey+numBuckets). Values far outside the range are only approximated by
+// those buckets, just as the in-process quantiles clamp them to the range's
+// edges.
 func (s *Snapshot) populateNativeFields(h *prometheusgo.Histogram) {
 	cfg := s.config()
 	schema := cfg.schema
@@ -86,6 +95,14 @@ func (s *Snapshot) populateNativeFields(h *prometheusgo.Histogram) {
 	zc := s.ZeroCount
 	h.ZeroThreshold = &zt
 	h.ZeroCount = &zc
+
+	// Pad the bucket array with the underflow and overflow buckets on either
+	// side. Empty ones are skipped below like any other empty bucket.
+	counts := make([]uint64, 0, len(s.Counts)+2)
+	counts = append(counts, s.Underflow)
+	counts = append(counts, s.Counts...)
+	counts = append(counts, s.Overflow)
+	firstKey := cfg.minKey - 1
 
 	// Build positive spans and delta-encoded counts from the bucket array.
 	// We walk the array, grouping consecutive non-zero buckets into spans
@@ -98,14 +115,14 @@ func (s *Snapshot) populateNativeFields(h *prometheusgo.Histogram) {
 	inSpan := false
 	gapSinceLastSpan := 0
 
-	for i, c := range s.Counts {
+	for i, c := range counts {
 		if c > 0 {
 			if !inSpan {
 				// Start a new span.
 				var offset int32
 				if len(spans) == 0 {
 					// First span: offset is the absolute Prometheus bucket key.
-					offset = int32(cfg.minKey + i)
+					offset = int32(firstKey + i)
 				} else {
 					// Subsequent spans: offset is the gap since the previous span ended.
 					offset = int32(gapSinceLastSpan)

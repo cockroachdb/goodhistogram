@@ -47,11 +47,12 @@ Because the classic buckets fold zeros and underflow into the same cumulative
 count, the zero, underflow, and overflow counters are pinned separately. The
 native export lines give the zero bucket's threshold and count, the positive
 spans as `offset:length` pairs, and the delta-encoded bucket counts, in
-Prometheus's sparse format. The native export carries zeros (in the zero
-bucket) and the in-range buckets only: underflow and overflow have no native
-bucket, so they appear only in the sample count, and implementations must not
-place them in buckets. Bucket counts, count, sum, schema, the counters, and the
-native export are compared exactly.
+Prometheus's sparse format. The native export carries zeros in the zero
+bucket, whose threshold stays at the smallest positive float, and the in-range
+buckets. Underflow goes in the bucket directly below the lowest bucket and
+overflow in the bucket directly above the highest, so the native bucket counts
+plus the zero count equal the sample count. Bucket counts, count, sum, schema,
+the counters, and the native export are compared exactly.
 Bucket boundaries and quantiles use small relative tolerances to absorb
 last-bit floating-point differences across platforms and math libraries.
 
